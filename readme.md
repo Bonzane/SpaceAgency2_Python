@@ -1,5 +1,9 @@
 # Space Agency 2 - Python Server
 
+*Command to run the server:*
+./run.sh
+
+
 ## Table of Contents
 - [Introduction](#introduction)
 - [Set-Up](#setup)

@@ -1,4 +1,5 @@
-# Running this file with Python should set up your server :)
+# Running this file with Python should set up your server :) 
+# Run it with ./run.sh. to create the virtual environment and run the server.
 
 #   You're talking a look at the code behind space agency 2!
 #   If you're just trying to change game settings, it's easier to 
@@ -32,11 +33,43 @@ with open("config.txt", "r") as config_file:
 
 
 # Construct the UI
+from textual.app import App, ComposeResult
+from textual.widgets import Header, Footer, Static
+from textual.containers import Container, Horizontal
+
 class ServerApp(App):
-    def compose(self):
+    BINDINGS = [
+        ("ctrl+c", "quit", "Quit")
+    ]
+
+    def compose(self) -> ComposeResult:
         yield Header()
-        yield Static("Welcome to Textual!", id="welcome-text")
         yield Footer()
+        yield Horizontal(
+            Static("Admin Tools", id="admin-tools", classes="column"),
+            Static("Event Log", id="event-log", classes="column"),
+        )
+
+    CSS = """
+    Horizontal {
+        height: 1fr;
+    }
+    .column {
+        width: 1fr;
+        border: solid gray;
+        padding: 1 2;
+        margin: 1;
+        height: 100%;
+    }
+    #admin-tools {
+        background: #222244;
+        color: white;
+    }
+    #event-log {
+        background: #222222;
+        color: #00ff00;
+    }
+    """
 
 app = ServerApp()
 app.run()
