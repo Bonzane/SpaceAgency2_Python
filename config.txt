@@ -1,0 +1,37 @@
+🚀  Server Configuation and Game Settings
+
+🚀          Lines that start with a rocket ship emoji 🚀 are IGNORED
+🚀          Information in this file is key-value pairs
+
+
+
+🚀 -------------------------------------
+🚀  Server Configuration
+🚀 -------------------------------------
+server_settings.server_name Communication Satellite
+server_settings.maxclients 99
+server_settings.listing_domain commsat.org
+server_settings.listing_port 443
+server_settings.administrators [76561198191668615, 76561199063071677]
+server_settings.control_port 9001
+server_settings.streaming_port 9002
+🚀  If you obtain a trust key from Hyder, put it here!
+server_settings.trustkey 0
+
+
+
+🚀 -------------------------------------
+🚀  Default Game Settings
+🚀 -------------------------------------
+
+game_defaults.cashmultipler 1.0
+game_defaults.thrustmultiplier 1.0
+game_defaults.fuelmultiplier 1.0
+game_defaults.componentcostmultiplier 1.0
+game_defaults.buildingcostmultiplier 1.0
+game_defaults.upgradecostmultiplier 1.0
+game_defaults.baseincomemultiplier 1.0
+game_defaults.playerstartcash 200000
+
+🚀 This is a boolean value. 0 = false 1 = true. 
+game_defaults.disableglobalchat 0
