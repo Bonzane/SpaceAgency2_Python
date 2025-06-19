@@ -71,13 +71,24 @@ class ServerApp(App):
     }
     """
 
-app = ServerApp()
-app.run()
+# Uncomment this to enable the user friendly gui
+# app = ServerApp()
+# app.run()
 
 # Attempt to contact the listing server
+http_client = server.HttpClient()
+listing_domain = server_settings.get("listing_domain", "https://commsat.org/api/healthcheck")
+print("This is the listing domain: " + listing_domain)
+listing_server_status = http_client.listing_healthcheck(listing_domain)
 
 
-# Boot up the live server
+# Initialize TCP and UDP servers
+control_port = int(server_settings.get("control_port", 9001))
+control_server = server.ControlServer(control_port)
+
+
+#activate servers
+control_server.activate()
 
 
 
