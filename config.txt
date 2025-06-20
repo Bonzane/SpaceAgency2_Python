@@ -11,7 +11,7 @@
 server_settings.server_name Communication Satellite
 server_settings.maxclients 99
 server_settings.listing_domain https://commsat.org
-server_settings.listing_port 443
+server_settings.game_is_public 1
 server_settings.administrators [76561198191668615, 76561199063071677]
 server_settings.control_port 9001
 server_settings.streaming_port 9002
