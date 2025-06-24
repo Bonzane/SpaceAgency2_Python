@@ -13,6 +13,7 @@ class Session:
         self.remote_ip = writer.get_extra_info('peername')[0]
         self.keepalive_task = None
         self.alive = True
+        self.validated = False
 
     async def start(self):
         self.assign_temp_id()

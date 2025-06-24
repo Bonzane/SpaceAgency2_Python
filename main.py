@@ -23,10 +23,11 @@ with open("config.txt", "r") as config_file:
     for line in config_file:
         if line.strip() and not line.startswith("🚀"):
             key, value = line.split(" ", 1)
-            if key.startswith("server_settings"):
-                server_settings[key] = value.strip()
-            elif key.startswith("game_defaults"):
-                game_defaults[key] = value.strip()
+            if key.startswith("server_settings."):
+                server_settings[key[len("server_settings."):]] = value.strip()
+            elif key.startswith("game_defaults."):
+                game_defaults[key[len("game_defaults."):]] = value.strip()
+
             else:
                 print(f"Unknown config key: {key}")
 
@@ -72,21 +73,24 @@ class ServerApp(App):
 async def main():
     # Attempt to contact the listing server
     http_client = server.HttpClient()
-    listing_domain = server_settings.get("listing_domain", "https://commsat.org/api/healthcheck")
+    listing_domain = server_settings.get("listing_domain", "https://list.commsat.org")
     print("This is the listing domain: " + listing_domain)
     listing_server_status = http_client.listing_healthcheck(listing_domain)
-
-    # Start the posting loop - This task sends the listing server information about your server,
-    # So that everyone can find your game! 
-    status_update_task = asyncio.create_task(server.update_listing_server(missioncontrol, http_client, listing_domain))
 
     # Create the mission control
     admins = server_settings.get("administrators", [])
     missioncontrol = server.ServerMissionControl(admins)
     missioncontrol.set_public_name(server_settings.get("server_name", "Commsat"))
 
+    # Start the posting loop - This task sends the listing server information about your server,
+    # So that everyone can find your game! 
+    status_update_task = asyncio.create_task(server.update_listing_server(missioncontrol, http_client, listing_domain))
+
+
     # Initialize TCP server
     control_port = int(server_settings.get("control_port", 9001))
+    missioncontrol.set_control_port(control_port)
+    missioncontrol.set_control_port_extern(int(server_settings.get("tcp_control_port_external", 9001)))
     control_server = server.ControlServer(missioncontrol, control_port)
     control_server.activate()
 

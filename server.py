@@ -37,11 +37,18 @@ class HttpClient:
 async def update_listing_server(shared_state, http_client, to_url):
     while True:
         try:
+            #GATHER RELEVANT INFO
+
+
+
             #A LOT OF STUFF HERE IS BS'ed. I HOPE I AM NOT DUMB ENOUGH TO
             #FORGET TO COME BACK TO THIS
             data = {
-                "host": "192.168.1.141",      # <- BS
-                "controlServerTCPPort" : 9001 ,      # <- BS
+                "host": "0.0.0.0",      # <- BS, and just to be honest with you, this doesn't do anything. 
+                                        #  The official listing server ignores this, but if someone for some reason
+                                        # wants to make their own listing server and allow you to create listings 
+                                        #  from one computer for a server running somewhere else, they might choose to implement this.  
+                "controlServerTCPPort" : shared_state.external_control_port ,
                 "streamingServerUDPPort" : 9002,      # <- BS
                 "serverPublicName" : shared_state.server_public_name,
                 "passwordProtected" : 0,       # <- BS
@@ -49,7 +56,7 @@ async def update_listing_server(shared_state, http_client, to_url):
                 "selfReportedStatus" : 0,      # <- BS
                 "currentPlayers" : 0,      # <- BS
                 "inGameDay" : 0,      # <- BS
-                "timeOfLastPlayerJoin" :0      # <- BS
+                "timeOfLastPlayerJoin" : 0      # <- BS
             }
 
             print(f"🌐 Posting Listing")
@@ -73,6 +80,10 @@ class ServerMissionControl:
         self.server_public_status = 1
         self.max_players = None
         self.host = "0.0.0.0"
+        self.control_port = None
+        self.streaming_port = None
+        self.external_control_port = None
+        self.external_streaming_port = None
 
     def set_public_name(self, new_name):
         self.server_public_name = new_name
@@ -80,6 +91,17 @@ class ServerMissionControl:
     def set_host(self, new_ip_addr):
         self.host = new_ip_addr
 
+    def set_control_port(self, newport):
+        self.control_port = newport
+    
+    def set_streaming_port(self, newport):
+        self.streaming_port = newport
+
+    def set_control_port_extern(self, newport):
+        self.external_control_port = newport
+    
+    def set_streaming_port_extern(self, newport):
+        self.external_streaming_port = newport
     
 
 
@@ -113,6 +135,7 @@ class ControlServer:
         session = Session(reader, writer, self)
         self.sessions.add(session)
         try:
+            print(f"[+] New connection from {session.remote_ip}, assigned temp ID {session.temporary_id}. Awaiting Validation.")
             await session.start()
         except Exception as e:
             print(f"Error in session: {e}")
@@ -139,5 +162,10 @@ class ControlServer:
 
     def count_sessions(self) -> int:
         return len(self.sessions)
+
+    def get_next_temp_id(self) -> int:
+        temp_id = self.next_available_temp_id
+        self.next_available_temp_id += 1
+        return temp_id
 
         
