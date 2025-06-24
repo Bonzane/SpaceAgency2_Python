@@ -14,11 +14,11 @@ class Session:
         self.keepalive_task = None
         self.alive = True
         self.validated = False
+        self.keepalive = 0
 
     async def start(self):
         self.assign_temp_id()
         await self.send_welcome()
-        self.keepalive_task = asyncio.create_task(self.keepalive())
 
         try:
             while self.alive:
@@ -29,10 +29,10 @@ class Session:
             await self.close()
 
     def assign_temp_id(self):
-        self.temporary_id = self.control_server.get_next_temp_id()
+        self.temp_id = self.control_server.get_next_temp_id()
 
     async def send_welcome(self):
-        print(f"[+] Connection from {self.remote_ip}, assigned ID {self.temporary_id}")
+        print(f"[+] Connection from {self.remote_ip}, assigned ID {self.temp_id}")
 
     async def read_and_process_packet(self):
         header = await self.reader.readexactly(2)
@@ -45,7 +45,7 @@ class Session:
             payload = await self.reader.readexactly(8)
             self.steam_id = int.from_bytes(payload, 'little')
             print(f"Steam ID received: {self.steam_id}")
-            await self.control_server.register_player(self)   
+            #await self.control_server.register_player(self)   
 
         # 0x0002    -   The client sent a chat message, and the TCP server will need to relay
         elif function_code == PacketType.CHAT_MESSAGE_RELAY: 
@@ -63,3 +63,9 @@ class Session:
             print(f"🔴 Unknown function code: {function_code}")
             self.alive = False         
                 
+    async def close(self):
+        print(f"[-] Closing session for {self.remote_ip}")
+        self.writer.close()
+        await self.writer.wait_closed()
+        if self.keepalive_task:
+            self.keepalive_task.cancel()

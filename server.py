@@ -135,7 +135,7 @@ class ControlServer:
         session = Session(reader, writer, self)
         self.sessions.add(session)
         try:
-            print(f"[+] New connection from {session.remote_ip}, assigned temp ID {session.temporary_id}. Awaiting Validation.")
+            print(f"[+] New connection from {session.remote_ip}, assigned temp ID {session.temp_id}. Awaiting Validation.")
             await session.start()
         except Exception as e:
             print(f"Error in session: {e}")
