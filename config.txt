@@ -5,6 +5,14 @@
 
 
 
+🚀 -----------------------------------------
+🚀  Game - Which game does the server launch?
+🚀 -----------------------------------------
+
+game.path ./gameData/devGame/
+🚀 Relative path reccomended
+
+
 🚀 -------------------------------------
 🚀  Server Configuration
 🚀 -------------------------------------

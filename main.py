@@ -13,12 +13,15 @@ import server
 from textual.app import App, ComposeResult
 from textual.widgets import Header, Footer, Static
 from textual.containers import Horizontal
+import os
+from game import Game
 
 print("Server Starting")
 
 # Parse the config.txt file
 server_settings = {}
 game_defaults = {}
+game_data = {}
 with open("config.txt", "r") as config_file:
     for line in config_file:
         if line.strip() and not line.startswith("🚀"):
@@ -27,7 +30,8 @@ with open("config.txt", "r") as config_file:
                 server_settings[key[len("server_settings."):]] = value.strip()
             elif key.startswith("game_defaults."):
                 game_defaults[key[len("game_defaults."):]] = value.strip()
-
+            elif key.startswith("game."):
+                game_data[key[len("game."):]] = value.strip()
             else:
                 print(f"Unknown config key: {key}")
 
@@ -102,6 +106,11 @@ async def main():
     # udp_task = asyncio.create_task(udp_server.start())
 
     # game_loop_task = asyncio.create_task(game_loop(missioncontrol))
+
+    # Load the Game
+    game_files = game_data.get("path", "gameData/default")
+    #Create the game, it will automatically big bang if necessary
+    game = Game(game_files)
 
 
     # Wait on all tasks

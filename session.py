@@ -45,7 +45,8 @@ class Session:
             payload = await self.reader.readexactly(8)
             self.steam_id = int.from_bytes(payload, 'little')
             print(f"Steam ID received: {self.steam_id}")
-            #await self.control_server.register_player(self)   
+            await self.control_server.register_player(self)
+
 
         # 0x0002    -   The client sent a chat message, and the TCP server will need to relay
         elif function_code == PacketType.CHAT_MESSAGE_RELAY: 

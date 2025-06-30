@@ -168,4 +168,9 @@ class ControlServer:
         self.next_available_temp_id += 1
         return temp_id
 
+    async def register_player(self, session):
+        __steam_id_to_check = session.steam_id  #Future logic about validating game ownership, mods, keys, etc
+        
+
+        pass
         

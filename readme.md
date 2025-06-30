@@ -4,6 +4,10 @@
 ./run.sh
 
 
+There's a lot of information here, but don't get too overwhelmed! 
+I hope to keep these servers simple and managable so that everyone
+can have a good time making their own servers and server mods. 
+
 ## Table of Contents
 - [Introduction](#introduction)
 - [Set-Up](#setup)
@@ -19,6 +23,7 @@ There are a lot of parts to a Space Agency server, so before getting started it'
 A "Game" within these servers refers to one world-state. For example, I have 3 satellites orbiting Earth
 and my friend Caiden has 4. In another game on the same server, we might be in the same agency and have 4 satellites, 3 telescopes, and a moon lander. When launcing a server, you'll need to specify which "Game"
 will be running, so that the server knows where to find the files that describe all of the world information.
+To do this, edit game.path in config.txt. To make a new game, just provide a path that has no files yet. 
 
 The universe in Space Agency 2 is made of Chunks that contain objects. Physics run within one Chunk at a time, and this can use a lot of parallel compute, so a multi-core CPU is highly recommended. Any chunk a player is in will run real-time physics. Other chunks will calculate the positions of objects based on their former positions, and the amount of time that has passed since that chunk was last running real-time physics. The "biggest chunk" is the Intergalactic Chunk, which contains a map of all the galaxies. When a player gets close to one of these galaxies, they enter that galaxy's "Interstellar Chunk". When a player gets close to a star in that interstellar chunk, they enter that star's Solar Chunk, which might contain planets, strange objects, asteroids, etc. This gives the illusion that the Map is actually the size of the observable universe, since you can fly across it in a straight line, but in reality the mostly-empty intergalatic and interstellar space is stored in smaller files. However, as players explore more and more of your game's universe, more data has to be stored on your Disk, so if hosting large games be sure to allocate a few gigabytes on disk space for your Game. 
 
@@ -29,5 +34,8 @@ The parameters for running the server are defined in config.txt. Most basic game
 can be changed by editing this file alone. That way, if you want to host servers on behalf of someone else, 
 they can provide you with the configuration file which is easily interchangable with the rest of the server.
 
+### Check-List
 
-
+☑️  Make sure your port-forwarding matches the ports in config.txt
+☑️  Set the game path in config.txt
+☑️  Run the script with ./run.sh
