@@ -13,12 +13,13 @@ from chunk_manager import ChunkManager
 
 
 class Game:
-    def __init__(self, root, tickrate, simrate):
+    def __init__(self, root, tickrate, simrate, shared):
         self.active = False
         self.base_path = pathlib.Path(root)
         self.universe_path = self.base_path / "universe"
-        self.chunk_manager = ChunkManager(self.universe_path, self)
+        self.chunk_manager = ChunkManager(shared, self.universe_path, self)
         self.simsec_per_tick = simrate / tickrate
+        self.shared = shared
 
 
         if not self.base_path.exists():

@@ -138,6 +138,7 @@ class Session:
     async def close(self):
         print(f"[-] Closing session for {self.remote_ip}")
         self.writer.close()
+        self.alive = False
         await self.writer.wait_closed()
         if self.keepalive_task:
             self.keepalive_task.cancel()

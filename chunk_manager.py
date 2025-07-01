@@ -5,13 +5,15 @@ from typing import Dict, Tuple
 from chunk import Chunk 
 
 class ChunkManager:
-    def __init__(self, root_directory: Path, game, tickrate: int = 60):
+    def __init__(self, shared, root_directory: Path, game, tickrate: int = 60):
         print("🧠The chunkmanager has awoken 👀")
         self.root = Path(root_directory)
         self.loaded_chunks: Dict[Tuple[int, int], Chunk] = {}
         self.tickrate = tickrate 
         self.game = game
         self._start_threads()
+        self.shared = shared
+        shared.chunk_manager = self
 
 
     def load_chunk(self, galaxy: int, system: int):
@@ -21,7 +23,7 @@ class ChunkManager:
             return
 
         filepath = self._get_chunk_path(galaxy, system)
-        chunk = Chunk(galaxy, system, filepath)
+        chunk = Chunk(galaxy, system, filepath, self)
         self.loaded_chunks[key] = chunk
         print(f"✅ Chunk {key} loaded.")
 

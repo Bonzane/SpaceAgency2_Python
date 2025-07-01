@@ -22,6 +22,8 @@ class DataGramPacketType(IntEnum):
     LATENCY_LEARN_PORT = 0x00
     PLAYER_DETAILS_UDP = 0x01
     UDP_ASK_ABOUT_AGENCY = 0x02
+    OBJECT_STREAM = 0x03
+    OBJECT_INQUIRY = 0x04
 
 
 class ChatMessage(IntEnum):

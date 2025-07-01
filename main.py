@@ -107,6 +107,7 @@ async def main():
     udp_server = server.StreamingServer(missioncontrol, streaming_port, control_server)
     udp_task = asyncio.create_task(udp_server.start())
     udp_server.activate()
+    missioncontrol.udp_server = udp_server
     # game_loop_task = asyncio.create_task(game_loop(missioncontrol))
 
     # Load the Game
@@ -114,7 +115,7 @@ async def main():
     #Create the game, it will automatically big bang if necessary
     tickrate = int(server_settings.get("tickrate", 60))
     gamespeed = float(server_settings.get("gamespeed_multiplier", 1.0) * 2920)
-    game = Game(game_files, tickrate, gamespeed)
+    game = Game(game_files, tickrate, gamespeed, missioncontrol)
 
 
 

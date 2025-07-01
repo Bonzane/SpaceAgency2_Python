@@ -86,6 +86,9 @@ class ServerMissionControl:
         self.external_control_port = None
         self.external_streaming_port = None
         self.next_available_agency_id = 5
+        self.udp_server = None
+        self.udp_endpoint_to_session: Dict[Tuple[str, int], Session] = {}
+        self.chunk_manager = None
 
     def get_next_agency_id(self):
         current = self.next_available_agency_id
@@ -345,6 +348,8 @@ class StreamingServer:
                     if(session.udp_port != port):
                         session.udp_port = port
                         print(f"🔌 UDP port {port} learned for session {ip}")
+                        key = (ip, port)
+                        self.shared.udp_endpoint_to_session[key] = session
                     response = bytearray()
                     response.append(DataGramPacketType.LATENCY_LEARN_PORT)
                     self.transport.sendto(response, addr)
@@ -369,6 +374,65 @@ class StreamingServer:
                 print(f"📡 Sent agency info about {agency_id} to {addr}")
             else:
                 print(f"⚠️ No agency with ID {agency_id}")
+
+        elif data[0] == DataGramPacketType.OBJECT_INQUIRY:
+            key = (ip, port)
+            session = self.shared.udp_endpoint_to_session.get(key)
+            if not session:
+                print(f"❌ Unknown session for {key}")
+                return
+
+            player = session.player
+            if not player:
+                print(f"❌ No player bound to session {session.temp_id}")
+                return
+
+            if len(data) < 3:
+                print("⚠️ Inquiry packet too short.")
+                return
+
+            num_inquiries = int.from_bytes(data[1:3], 'little')
+            print(f"🔍 Received object inquiry for {num_inquiries} objects from {addr}")
+
+            expected_length = 1 + 2 + (8 * num_inquiries)
+            if len(data) < expected_length:
+                print(f"⚠️ Incomplete object inquiry packet: expected {expected_length} bytes, got {len(data)}")
+                return
+
+            # Extract object IDs (64-bit unsigned ints)
+            object_ids = []
+            offset = 3
+            for _ in range(num_inquiries):
+                obj_id = int.from_bytes(data[offset:offset + 8], 'little')
+                object_ids.append(obj_id)
+                offset += 8
+
+            print(f"🆔 Client asked about object IDs: {object_ids}")
+
+            # RESPONSE TO OBJECT INQUIRY
+
+            chunk_key = (player.galaxy, player.system)
+            chunk = self.shared.chunk_manager.loaded_chunks.get(chunk_key)
+
+            if not chunk:
+                print(f"⚠️ ERROR: COULDNT FIND CHUNK {chunk_key}")
+                return
+
+            response = bytearray()
+            response.append(DataGramPacketType.OBJECT_INQUIRY)
+            response += struct.pack('<H', len(object_ids))               # uint16: number of objects
+
+            for object_id in object_ids:
+                obj = chunk.get_object_by_id(object_id)
+                if obj:
+                    response += struct.pack('<QH', obj.object_id, obj.object_type)
+                else:
+                    print(f"Object {object_id} does not exist in that chunk.")
+
+            addr = (session.remote_ip, session.udp_port)
+            self.transport.sendto(response, addr)
+
+
 
     def error_received(self, exc):
         print(f"⚠️ UDP error received: {exc}")
