@@ -6,16 +6,20 @@ import time
 from datetime import datetime
 from player import Player
 from agency import Agency
+import gameobjects
+import pickle
 
-#from chunk_manager import ChunkManager
-#from objects import *  
+from chunk_manager import ChunkManager
+
 
 class Game:
-    def __init__(self, root):
+    def __init__(self, root, tickrate, simrate):
         self.active = False
         self.base_path = pathlib.Path(root)
         self.universe_path = self.base_path / "universe"
-        #self.chunk_manager = ChunkManager(self.universe_path)
+        self.chunk_manager = ChunkManager(self.universe_path, self)
+        self.simsec_per_tick = simrate / tickrate
+
 
         if not self.base_path.exists():
             self.base_path.mkdir(parents=True)
@@ -54,7 +58,7 @@ class Game:
         return True
 
     def load_game(self):
-        pass
+        self.chunk_manager.load_chunk(1,1)
 
     def create_universe_galaxymap(self):
         chunk_path = self.universe_path / "intergalacticMap.sa2map" 
@@ -66,8 +70,13 @@ class Game:
 
     def create_home_chunk(self):
         chunk_path = self.universe_path / "galaxies" / "1" / "systems" / "system_1.chunk"
-        with open(chunk_path, "w") as file:
-            file.write("0")
+        print("🔧 Building Home Chunk")
+        sun = gameobjects.Sun()
+        print("📍 Added The Sun")
+        earth = gameobjects.Earth()
+        print("📍 Added Earth")
+        with open(chunk_path, "wb") as file:
+            pickle.dump([sun, earth], file)
 
 
         print("✅ Created Home Chunk")
@@ -79,4 +88,8 @@ class Game:
             file.write("0")
 
         print("✅ Created Milky Way Starmap")
+
+
+
+
 

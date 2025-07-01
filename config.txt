@@ -27,6 +27,7 @@ server_settings.control_port 9001
 server_settings.streaming_port 9002
 server_settings.tcp_control_port_external 58111
 server_settings.udp_streaming_port_external 58112
+server_settings.tickrate 60
 🚀  If you obtain a trust key from Hyder, put it here!
 server_settings.trustkey 0
 
@@ -44,6 +45,7 @@ game_defaults.buildingcostmultiplier 1.0
 game_defaults.upgradecostmultiplier 1.0
 game_defaults.baseincomemultiplier 1.0
 game_defaults.playerstartcash 200000
+game_defaults.gamespeedmultiplier 1.0
 
 🚀 This is a boolean value. 0 = false 1 = true. 
 game_defaults.disableglobalchat 0

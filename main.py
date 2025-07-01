@@ -101,16 +101,19 @@ async def main():
     # Start TCP server task
     tcp_task = asyncio.create_task(control_server.start())
 
-    # Placeholder
-    # udp_server = server.UdpServer(missioncontrol, port)
-    # udp_task = asyncio.create_task(udp_server.start())
+    #Initialize UDP server
+    streaming_port = int(server_settings.get("control_port", 9002))
+    udp_server = server.StreamingServer(missioncontrol, streaming_port, control_server)
+    udp_task = asyncio.create_task(udp_server.start())
 
     # game_loop_task = asyncio.create_task(game_loop(missioncontrol))
 
     # Load the Game
     game_files = game_data.get("path", "gameData/default")
     #Create the game, it will automatically big bang if necessary
-    game = Game(game_files)
+    tickrate = int(server_settings.get("tickrate", 60))
+    gamespeed = float(server_settings.get("gamespeed_multiplier", 1.0) * 2920)
+    game = Game(game_files, tickrate, gamespeed)
 
 
     # Wait on all tasks
@@ -121,3 +124,6 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
+
+

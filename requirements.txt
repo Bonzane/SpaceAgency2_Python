@@ -1,3 +1,4 @@
 textual>=0.50
 requests
 aiohttp
+numpy

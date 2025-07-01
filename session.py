@@ -15,10 +15,12 @@ class Session:
         self.alive = True
         self.validated = False
         self.keepalive = 0
+        self.udp_port = None #Streaming server will discover this. It's assigned by the clients OS. 
 
     async def start(self):
         self.assign_temp_id()
         await self.send_welcome()
+
 
         try:
             while self.alive:
@@ -44,16 +46,25 @@ class Session:
         if function_code == PacketType.REQUEST_STEAM_INFO:
             payload = await self.reader.readexactly(8)
             self.steam_id = int.from_bytes(payload, 'little')
-            print(f"Steam ID received: {self.steam_id}")
+            print(f"Steam ID for {self.remote_ip} received: {self.steam_id}")
             await self.control_server.register_player(self)
+            await self.control_server.tell_everyone_player_joined(self.steam_id)
 
 
         # 0x0002    -   The client sent a chat message, and the TCP server will need to relay
         elif function_code == PacketType.CHAT_MESSAGE_RELAY: 
             msg_type = await self.reader.readexactly(1)
             message = await self.reader.readuntil(b'\x00')
-            print(f"Chat: {message[:-1].decode()}")
-            #Todo - TCP server relay
+            decoded = message[:-1].decode()
+            print(f"{self.remote_ip} says: \"{decoded}\"")
+            #TCP RELAY
+            packet = bytearray()
+            packet += PacketType.CHAT_MESSAGE_RELAY.to_bytes(2, 'little')  # Function code
+            packet += msg_type                                             # Message type
+            packet += self.steam_id.to_bytes(8, 'little')                  # From who
+            packet += message                                              # Original message
+            await self.control_server.broadcast(packet)
+
 
         # 0x0004    -   Keep alive packets show that the client is connected even if they're being lame and boring
         elif function_code == PacketType.KEEPALIVE:
@@ -62,7 +73,16 @@ class Session:
 
         else:
             print(f"🔴 Unknown function code: {function_code}")
-            self.alive = False         
+            self.alive = False    
+
+    async def send(self, data: bytes):
+        try:
+            self.writer.write(data)
+            await self.writer.drain()
+        except Exception as e:
+            print(f"Send failed: {e}")
+            self.alive = False
+     
                 
     async def close(self):
         print(f"[-] Closing session for {self.remote_ip}")
@@ -70,3 +90,5 @@ class Session:
         await self.writer.wait_closed()
         if self.keepalive_task:
             self.keepalive_task.cancel()
+        if self.steam_id:
+            await self.control_server.tell_everyone_player_left(self.steam_id)

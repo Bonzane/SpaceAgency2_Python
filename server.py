@@ -5,7 +5,7 @@ from session import Session
 from player import Player
 from agency import Agency
 import agency
-import packet_types
+from packet_types import PacketType, DataGramPacketType
 from typing import Set, Dict
 import aiohttp
 
@@ -146,13 +146,20 @@ class ControlServer:
 
     # Sends data to all connected clients
     async def broadcast(self, data: bytes):
-        await asyncio.gather(*(s.send(data) for s in self.sessions))
+        await asyncio.gather(*(s.send(data) for s in self.sessions if s.alive))
+
     
-    def tell_everyone_player_joined(self, id64: int):
+    async def tell_everyone_player_joined(self, steam_id: int):
         packet = bytearray()
-        packet += (packet_types.PLAYER_JOIN).to_bytes(2, 'little')
-        packet += id64.to_bytes(8, 'little')
-        self.broadcast(packet)
+        packet += PacketType.PLAYER_JOIN.to_bytes(2, 'little')  # 2-byte function code
+        packet += steam_id.to_bytes(8, 'little')                 # 8-byte Steam ID
+        await self.broadcast(packet)
+
+    async def tell_everyone_player_left(self, steam_id: int):
+        packet = bytearray()
+        packet += PacketType.PLAYER_LEAVE.to_bytes(2, 'little')
+        packet += steam_id.to_bytes(8, 'little')
+        await self.broadcast(packet)
 
     def get_player_by_steamid(self, steamid: int):
         return self.shared.players.get(steamid)
@@ -174,3 +181,22 @@ class ControlServer:
 
         pass
         
+
+
+class StreamingServer:
+    def __init__(self,missioncontrol, listens_on_port, controlserver):
+        self.shared = missioncontrol
+        self.port = listens_on_port
+        self.active = False #The server must be "activated"
+
+    def activate(self):
+        print(f"🟢 Streaming Server Activated on port {self.port}")
+        self.active = True
+
+    async def start(self):
+        loop = asyncio.get_running_loop()
+        self.transport, _ = await loop.create_datagram_endpoint(
+            lambda: self,
+            local_addr=('0.0.0.0', self.port)
+        )
+        asyncio.create_task(self.broadcast_player_details_loop())
