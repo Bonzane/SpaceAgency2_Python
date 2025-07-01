@@ -8,6 +8,7 @@ import agency
 from packet_types import PacketType, DataGramPacketType
 from typing import Set, Dict
 import aiohttp
+import struct
 
 class HttpClient:
     def __init__(self):
@@ -49,7 +50,7 @@ async def update_listing_server(shared_state, http_client, to_url):
                                         # wants to make their own listing server and allow you to create listings 
                                         #  from one computer for a server running somewhere else, they might choose to implement this.  
                 "controlServerTCPPort" : shared_state.external_control_port ,
-                "streamingServerUDPPort" : 9002,      # <- BS
+                "streamingServerUDPPort" : shared_state.external_streaming_port,
                 "serverPublicName" : shared_state.server_public_name,
                 "passwordProtected" : 0,       # <- BS
                 "maxConnections" : 100,      # <- BS
@@ -154,6 +155,7 @@ class ControlServer:
         packet += PacketType.PLAYER_JOIN.to_bytes(2, 'little')  # 2-byte function code
         packet += steam_id.to_bytes(8, 'little')                 # 8-byte Steam ID
         await self.broadcast(packet)
+        await self.tell_everyone_info_about_everyone()
 
     async def tell_everyone_player_left(self, steam_id: int):
         packet = bytearray()
@@ -161,8 +163,10 @@ class ControlServer:
         packet += steam_id.to_bytes(8, 'little')
         await self.broadcast(packet)
 
-    def get_player_by_steamid(self, steamid: int):
+
+    def get_player_by_steamid(self, steamid: int) -> Player:
         return self.shared.players.get(steamid)
+
 
     def agency_with_name_exists(self, name: str) -> bool:
         return any(a.name == name for a in self.shared.agencies.values())
@@ -176,11 +180,37 @@ class ControlServer:
         return temp_id
 
     async def register_player(self, session):
-        __steam_id_to_check = session.steam_id  #Future logic about validating game ownership, mods, keys, etc
+        steam_id = session.steam_id
+        if self.get_player_by_steamid(steam_id) is None:
+            player = Player(session, steam_id)
+            self.shared.players[steam_id] = player
+        else:
+            player = self.get_player_by_steamid(steam_id)
         
+        session.player = player
 
-        pass
-        
+        await self.tell_everyone_player_joined(steam_id)
+        await self.tell_everyone_info_about_everyone()
+
+
+    async def tell_everyone_info_about_everyone(self): 
+        print("👥 Broadcasting player information")
+        packet = bytearray()
+        packet += PacketType.INFO_ABOUT_PLAYERS.to_bytes(2, 'little')
+        sessions = [s for s in self.sessions if s.alive]
+        packet.append(len(sessions))
+        for session in sessions:
+            player = self.get_player_by_steamid(session.steam_id)
+
+        if player:
+            packet += struct.pack('<Q', session.steam_id)         # u64 Steam ID
+            packet.append(session.temp_id)                        # u8 Temp ID
+            packet += struct.pack('<II', player.galaxy, player.system)  # u32 galaxy, u32 system
+            packet += struct.pack('<Q', player.agency_id)         # u64 Agency ID
+        else:
+            packet += struct.pack('<Q', 0)  # u64 = 0 means invalid player
+
+        await self.broadcast(packet)
 
 
 class StreamingServer:
@@ -188,15 +218,74 @@ class StreamingServer:
         self.shared = missioncontrol
         self.port = listens_on_port
         self.active = False #The server must be "activated"
+        self.control = controlserver
 
     def activate(self):
         print(f"🟢 Streaming Server Activated on port {self.port}")
         self.active = True
 
+
     async def start(self):
         loop = asyncio.get_running_loop()
-        self.transport, _ = await loop.create_datagram_endpoint(
+        await loop.create_datagram_endpoint(
             lambda: self,
             local_addr=('0.0.0.0', self.port)
         )
-        asyncio.create_task(self.broadcast_player_details_loop())
+        self.activate()
+        # Start the periodic player updates
+        asyncio.create_task(self._broadcast_loop())
+
+
+    def connection_made(self, transport):
+        self.transport = transport
+        print("📡 UDP server is ready to stream data.")
+
+    def datagram_received(self, data, addr):
+        #print(f"📦 Received UDP from {addr} - Raw data: {data}")
+        if not data:
+            return
+
+        ip, port = addr
+
+        # Process a port-learn packet from client
+        if data[0] == DataGramPacketType.LATENCY_LEARN_PORT:
+            #print(f"🔌  Attempting port discovery")
+            for session in self.control.sessions:
+                if session.remote_ip == ip:
+                    if(session.udp_port != port):
+                        session.udp_port = port
+                        print(f"🔌 UDP port {port} learned for session {ip}")
+                    response = bytearray()
+                    response.append(DataGramPacketType.LATENCY_LEARN_PORT)
+                    self.transport.sendto(response, addr)
+
+    def error_received(self, exc):
+        print(f"⚠️ UDP error received: {exc}")
+
+    def connection_lost(self, exc):
+        print("🔌 UDP server closed.")
+
+    async def _broadcast_loop(self):
+        while True:
+            self.send_player_details()
+            await asyncio.sleep(1 / 60)  
+
+    def send_player_details(self):
+        packet = bytearray()
+        packet.append(DataGramPacketType.PLAYER_DETAILS_UDP)  
+        sessions = [s for s in self.control.sessions if s.alive]
+
+        packet.append(len(sessions))  # number of players
+
+        for session in sessions:
+            temp_id = session.temp_id or 0
+            player = self.control.get_player_by_steamid(session.steam_id)
+            money = player.money if player else 0
+
+            packet.append(temp_id)  # 1 byte
+            packet += struct.pack('<Q', money)  # 8 bytes (uint64 little-endian)
+
+        for session in sessions:
+            if hasattr(session, "udp_port") and session.udp_port:
+                addr = (session.remote_ip, session.udp_port)
+                self.transport.sendto(packet, addr)

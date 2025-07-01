@@ -16,6 +16,7 @@ class Session:
         self.validated = False
         self.keepalive = 0
         self.udp_port = None #Streaming server will discover this. It's assigned by the clients OS. 
+        self.player = None
 
     async def start(self):
         self.assign_temp_id()

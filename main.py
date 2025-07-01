@@ -95,6 +95,7 @@ async def main():
     control_port = int(server_settings.get("control_port", 9001))
     missioncontrol.set_control_port(control_port)
     missioncontrol.set_control_port_extern(int(server_settings.get("tcp_control_port_external", 9001)))
+    missioncontrol.set_streaming_port_extern(int(server_settings.get("udp_streaming_port_external", 9001)))
     control_server = server.ControlServer(missioncontrol, control_port)
     control_server.activate()
 
@@ -102,10 +103,10 @@ async def main():
     tcp_task = asyncio.create_task(control_server.start())
 
     #Initialize UDP server
-    streaming_port = int(server_settings.get("control_port", 9002))
+    streaming_port = int(server_settings.get("streaming_port", 9002))
     udp_server = server.StreamingServer(missioncontrol, streaming_port, control_server)
     udp_task = asyncio.create_task(udp_server.start())
-
+    udp_server.activate()
     # game_loop_task = asyncio.create_task(game_loop(missioncontrol))
 
     # Load the Game
@@ -118,7 +119,7 @@ async def main():
 
     # Wait on all tasks
     try: 
-        await asyncio.gather(tcp_task, status_update_task)
+        await asyncio.gather(tcp_task, status_update_task, udp_task)
     finally:
         await http_client.close()
 
