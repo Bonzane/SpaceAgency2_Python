@@ -117,6 +117,8 @@ async def main():
     game = Game(game_files, tickrate, gamespeed)
 
 
+
+
     # Wait on all tasks
     try: 
         await asyncio.gather(tcp_task, status_update_task, udp_task)

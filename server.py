@@ -85,6 +85,12 @@ class ServerMissionControl:
         self.streaming_port = None
         self.external_control_port = None
         self.external_streaming_port = None
+        self.next_available_agency_id = 5
+
+    def get_next_agency_id(self):
+        current = self.next_available_agency_id
+        self.next_available_agency_id += 1
+        return current
 
     def set_public_name(self, new_name):
         self.server_public_name = new_name
@@ -124,6 +130,7 @@ class ControlServer:
     def activate(self):
         print(f"🟢 Control Server Activated on port {self.port}")
         self.active = True
+        asyncio.create_task(self.loop_tasks())  # Start periodic tasks
 
     #Starts the async loop that handles clients
     async def start(self):
@@ -131,6 +138,10 @@ class ControlServer:
         async with server:
             await server.serve_forever()
 
+    async def loop_tasks(self):
+        while True:
+            await self.send_list_of_agencies()
+            await asyncio.sleep(30)
 
     async def handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         session = Session(reader, writer, self)
@@ -138,6 +149,7 @@ class ControlServer:
         try:
             print(f"[+] New connection from {session.remote_ip}, assigned temp ID {session.temp_id}. Awaiting Validation.")
             await session.start()
+
         except Exception as e:
             print(f"Error in session: {e}")
         finally:
@@ -147,7 +159,9 @@ class ControlServer:
 
     # Sends data to all connected clients
     async def broadcast(self, data: bytes):
-        await asyncio.gather(*(s.send(data) for s in self.sessions if s.alive))
+        alive_sessions = [s for s in self.sessions if s.alive]
+        print(f"📡 Broadcasting packet to {len(alive_sessions)} alive session(s).")
+        await asyncio.gather(*(s.send(data) for s in alive_sessions))
 
     
     async def tell_everyone_player_joined(self, steam_id: int):
@@ -155,7 +169,6 @@ class ControlServer:
         packet += PacketType.PLAYER_JOIN.to_bytes(2, 'little')  # 2-byte function code
         packet += steam_id.to_bytes(8, 'little')                 # 8-byte Steam ID
         await self.broadcast(packet)
-        await self.tell_everyone_info_about_everyone()
 
     async def tell_everyone_player_left(self, steam_id: int):
         packet = bytearray()
@@ -189,12 +202,8 @@ class ControlServer:
         
         session.player = player
 
-        await self.tell_everyone_player_joined(steam_id)
-        await self.tell_everyone_info_about_everyone()
-
-
     async def tell_everyone_info_about_everyone(self): 
-        print("👥 Broadcasting player information")
+        print(f"👥 Broadcasting {len(self.sessions)} player's information")
         packet = bytearray()
         packet += PacketType.INFO_ABOUT_PLAYERS.to_bytes(2, 'little')
         sessions = [s for s in self.sessions if s.alive]
@@ -202,15 +211,96 @@ class ControlServer:
         for session in sessions:
             player = self.get_player_by_steamid(session.steam_id)
 
-        if player:
-            packet += struct.pack('<Q', session.steam_id)         # u64 Steam ID
-            packet.append(session.temp_id)                        # u8 Temp ID
-            packet += struct.pack('<II', player.galaxy, player.system)  # u32 galaxy, u32 system
-            packet += struct.pack('<Q', player.agency_id)         # u64 Agency ID
-        else:
-            packet += struct.pack('<Q', 0)  # u64 = 0 means invalid player
+            if player:
+                packet += struct.pack('<Q', session.steam_id)         # u64 Steam ID
+                packet.append(session.temp_id)                        # u8 Temp ID
+                packet += struct.pack('<II', player.galaxy, player.system)  # u32 galaxy, u32 system
+                packet += struct.pack('<Q', player.agency_id)         # u64 Agency ID
+            else:
+                packet += struct.pack('<Q', 0)  # u64 = 0 means invalid player
 
+        print(f"📦 INFO_ABOUT_PLAYERS packet bytes: {packet.hex()}")
         await self.broadcast(packet)
+
+    async def tell_session_info_about_everyone(self, session):
+        if not session.alive:
+            print(f"⚠️ Session {session.temp_id} is not alive. Skipping info broadcast.")
+            return
+
+        valid_sessions = [
+            s for s in self.sessions
+            if s.alive and self.get_player_by_steamid(s.steam_id) is not None
+        ]
+
+        print(f"👤 Sending INFO_ABOUT_PLAYERS to session {session.temp_id} ({session.remote_ip})")
+        print(f"🧮 Valid player sessions to include: {len(valid_sessions)}")
+
+        packet = bytearray()
+        packet += PacketType.INFO_ABOUT_PLAYERS.to_bytes(2, 'little')  # u16 function code
+        packet.append(len(valid_sessions))                             # u8 player count
+
+        for s in valid_sessions:
+            player = self.get_player_by_steamid(s.steam_id)
+
+            packet += struct.pack('<Q', s.steam_id)                    # u64 Steam ID
+            packet.append(s.temp_id)                                   # u8 Temp ID
+            packet += struct.pack('<II', player.galaxy, player.system) # u32 galaxy, u32 system
+            packet += struct.pack('<Q', player.agency_id)              # u64 Agency ID
+
+            print(f"🧑 Player: {s.steam_id} | TempID: {s.temp_id} | Galaxy: {player.galaxy}, System: {player.system} | Agency: {player.agency_id}")
+
+        await session.send(packet)
+        print(f"📨 Sent INFO_ABOUT_PLAYERS packet ({len(packet)} bytes) to session {session.temp_id}")
+
+
+
+    async def send_list_of_agencies(self):
+        packet = bytearray()
+
+        # Packet header (2-byte function code for LIST_OF_AGENCIES)
+        packet += PacketType.LIST_OF_AGENCIES.to_bytes(2, 'little')
+
+        # Number of agencies as uint16
+        num_agencies = len(self.shared.agencies)
+        packet += struct.pack('<H', num_agencies)
+
+        for agency_id, agency in self.shared.agencies.items():
+            if agency:
+                # uint64 agency ID
+                packet += struct.pack('<Q', agency.id64)
+
+                # uint8 public flag
+                packet.append(1 if agency.is_public else 0)
+            else:
+                # Invalid agency: 64-bit zero
+                packet += struct.pack('<Q', 0)
+
+        # Send to all connected sessions
+        await self.broadcast(packet)
+
+    async def send_list_of_agencies_to_session(self, session):
+        packet = bytearray()
+
+        # Packet header (2-byte function code for LIST_OF_AGENCIES)
+        packet += PacketType.LIST_OF_AGENCIES.to_bytes(2, 'little')
+
+        # Number of agencies as uint16
+        num_agencies = len(self.shared.agencies)
+        packet += struct.pack('<H', num_agencies)
+
+        for agency_id, agency in self.shared.agencies.items():
+            if agency:
+                # uint64 agency ID
+                packet += struct.pack('<Q', agency.id64)
+
+                # uint8 public flag
+                packet.append(1 if agency.is_public else 0)
+            else:
+                # Invalid agency: 64-bit zero
+                packet += struct.pack('<Q', 0)
+
+        # Send directly to the specified session
+        await session.send(packet)
 
 
 class StreamingServer:
@@ -258,6 +348,27 @@ class StreamingServer:
                     response = bytearray()
                     response.append(DataGramPacketType.LATENCY_LEARN_PORT)
                     self.transport.sendto(response, addr)
+
+        elif data[0] == DataGramPacketType.UDP_ASK_ABOUT_AGENCY:
+            if len(data) < 9:
+                print("⚠️ Invalid UDP_ASK_ABOUT_AGENCY packet length")
+                return
+
+            agency_id = int.from_bytes(data[1:9], 'little')
+            print(f"📨 Client asked about agency: {agency_id}")
+
+            agency = self.control.shared.agencies.get(agency_id)
+            if agency:
+                response = bytearray()
+                response.append(DataGramPacketType.UDP_ASK_ABOUT_AGENCY)  # Function code
+                response += agency_id.to_bytes(8, 'little')                # u64 agency ID
+                response += agency.name.encode('utf-8') + b'\x00'          # null-terminated name
+                response.append(1 if agency.is_public else 0)              # u8 public flag
+
+                self.transport.sendto(response, addr)
+                print(f"📡 Sent agency info about {agency_id} to {addr}")
+            else:
+                print(f"⚠️ No agency with ID {agency_id}")
 
     def error_received(self, exc):
         print(f"⚠️ UDP error received: {exc}")

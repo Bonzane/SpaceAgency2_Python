@@ -39,6 +39,13 @@ class Game:
         else:   
             print(f"The game failed to load. Check for errors. Sorry :(")
 
+    async def _timer_broadcast_agency_list(self):
+        while True:
+            await self.broadcast_agency_list()
+            await asyncio.sleep(30)
+
+
+
     def big_bang(self):
         print("🌌 ---------- BIG BANG ----------")
         print("🚀 Creating universe, please wait...")
