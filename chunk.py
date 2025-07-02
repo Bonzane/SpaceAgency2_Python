@@ -72,19 +72,19 @@ class Chunk:
             obj_x, obj_y = obj.position
             obj_vx, obj_vy = obj.velocity
             chunkpacket += struct.pack(
-                '<QQQQQ',                   # < = little-endian
+                '<QQQQQf',                   # < = little-endian
                 obj.object_id,                  # Q: uint64
                 self.signed_to_unsigned64(int(obj_x)),                
                 self.signed_to_unsigned64(int(obj_y)),                
                 self.signed_to_unsigned64(int(obj_vx)),               
-                self.signed_to_unsigned64(int(obj_vy))                
+                self.signed_to_unsigned64(int(obj_vy)), 
+                obj.rotation             
             )
 
         for player in self.manager.shared.players.values():
             if(player.galaxy == self.galaxy and player.system == self.system):
                 session = player.session
                 if session and session.udp_port and session.alive:
-                    print("streaming objects to a player")
                     addr = (session.remote_ip, session.udp_port)
                     # Demeter's law doesn't apply to python and we all know it
                     self.manager.shared.udp_server.transport.sendto(chunkpacket, addr)

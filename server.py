@@ -197,13 +197,16 @@ class ControlServer:
 
     async def register_player(self, session):
         steam_id = session.steam_id
-        if self.get_player_by_steamid(steam_id) is None:
+        player = self.get_player_by_steamid(steam_id)
+        if not player:
             player = Player(session, steam_id)
             self.shared.players[steam_id] = player
         else:
-            player = self.get_player_by_steamid(steam_id)
-        
+            # 👇 IMPORTANT: re-bind the player to the new session
+            player.session = session
+
         session.player = player
+
 
     async def tell_everyone_info_about_everyone(self): 
         print(f"👥 Broadcasting {len(self.sessions)} player's information")
@@ -342,17 +345,17 @@ class StreamingServer:
 
         # Process a port-learn packet from client
         if data[0] == DataGramPacketType.LATENCY_LEARN_PORT:
-            #print(f"🔌  Attempting port discovery")
             for session in self.control.sessions:
-                if session.remote_ip == ip:
-                    if(session.udp_port != port):
+                if session.remote_ip == ip and session.alive:
+                    if session.udp_port != port:
                         session.udp_port = port
-                        print(f"🔌 UDP port {port} learned for session {ip}")
                         key = (ip, port)
                         self.shared.udp_endpoint_to_session[key] = session
+                        print(f"🔌 UDP port {port} learned for session {ip}")
                     response = bytearray()
                     response.append(DataGramPacketType.LATENCY_LEARN_PORT)
                     self.transport.sendto(response, addr)
+                    break
 
         elif data[0] == DataGramPacketType.UDP_ASK_ABOUT_AGENCY:
             if len(data) < 9:

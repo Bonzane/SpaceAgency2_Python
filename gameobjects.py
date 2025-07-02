@@ -76,6 +76,7 @@ class GameObject:
     object_type: ObjectType
     object_id: int = field(default_factory=lambda: GameObject.get_next_id())
     _next_id: int = 1
+    rotation: float = 0
 
     @classmethod
     def get_next_id(cls):

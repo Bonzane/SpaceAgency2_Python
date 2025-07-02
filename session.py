@@ -120,6 +120,8 @@ class Session:
             packet = bytearray()
             packet += PacketType.CREATE_AGENCY.to_bytes(2, 'little')
             packet.append(ec)
+            if not self.alive:
+                self.alive = True
             await self.send(packet)
 
         else:
@@ -134,13 +136,33 @@ class Session:
             print(f"Send failed: {e}")
             self.alive = False
      
-                
+                    
     async def close(self):
         print(f"[-] Closing session for {self.remote_ip}")
-        self.writer.close()
         self.alive = False
-        await self.writer.wait_closed()
+
+        self.control_server.sessions.discard(self)
+
+        if self.steam_id in self.control_server.shared.players:
+            player = self.control_server.shared.players[self.steam_id]
+            if player.session == self:
+                player.session = None
+
+        # Remove UDP mapping if it matches
+        if self.udp_port:
+            key = (self.remote_ip, self.udp_port)
+            if self.control_server.shared.udp_endpoint_to_session.get(key) == self:
+                del self.control_server.shared.udp_endpoint_to_session[key]
+
         if self.keepalive_task:
             self.keepalive_task.cancel()
+
         if self.steam_id:
             await self.control_server.tell_everyone_player_left(self.steam_id)
+
+        try:
+            self.writer.close()
+            await self.writer.wait_closed()
+        except Exception as e:
+            print(f"⚠️ Error closing session socket: {e}")
+

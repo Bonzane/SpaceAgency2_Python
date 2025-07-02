@@ -3,6 +3,7 @@
 class Agency:
     def __init__(self, name, initial_members=None):
         self.members = list(initial_members) if initial_members else []
+        self.bases = [1]
         self.name = name
         self.id64 = 0
         self.is_public = True
