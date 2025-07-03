@@ -1,0 +1,39 @@
+
+{
+
+    "buildings" :    [
+        {
+            "id" : 1,
+            "name" : "Earth Headquarters", 
+            "cost" : 0, 
+            "build_time" : 10,
+            "description" : "This building represents your agency's base on Earth. A great home base!",
+            "attributes" : {
+            }
+        },
+        {
+            "id" : 2,
+            "name" : "Launchpad", 
+            "cost" : 1000, 
+            "build_time" : 5,
+            "description" : "Construct and launch vessels into space from this launchpad.",
+            "attributes" : {
+            }
+        },
+        {
+            "id" : 3,
+            "name" : "Network Tower", 
+            "cost" : 1000, 
+            "build_time" : 10,
+            "description" : "The Network Tower can upgrade your agency's communication capabilities, making communication satellites more effective.",
+            "attributes" : {
+            }
+        } 
+
+
+    ],
+    "planet_to_buildings"   :
+    {
+        "Earth" : [1, 2, 3]
+    }
+}

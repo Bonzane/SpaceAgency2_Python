@@ -16,6 +16,8 @@ class PacketType(IntEnum):
     LEAVE_AGENCY = 0x000B
     LIST_OF_AGENCIES = 0x000C
     JOIN_PUBLIC_AGENCY = 0x000D
+    AGENCY_GAMESTATE = 0x000E
+    GAME_JSON = 0x000F
 
 
 class DataGramPacketType(IntEnum):

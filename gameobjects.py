@@ -3,6 +3,7 @@ import pickle
 from dataclasses import dataclass, field
 import itertools
 from typing import Tuple
+import numpy as np
 
 
 class ObjectType(IntEnum):
@@ -71,7 +72,7 @@ class PhysicsData:
 
 # ---------------- Base Object ----------------
 
-@dataclass
+@dataclass(unsafe_hash=True)
 class GameObject:
     object_type: ObjectType
     object_id: int = field(default_factory=lambda: GameObject.get_next_id())
@@ -92,6 +93,9 @@ class GameObject:
     def deserialize(cls, filepath: str):
         with open(filepath, "rb") as f:
             return pickle.load(f)
+                
+    def do_update(self, dt: float, acc: Tuple[float, float]):
+        pass  # base class does nothing
 
 
 # PhysicsObject extends GameObject and adds physics fields
@@ -100,6 +104,23 @@ class PhysicsObject(GameObject):
     position: Tuple[float, float] = (0.0, 0.0)
     velocity: Tuple[float, float] = (0.0, 0.0)
     mass: float = 1.0
+
+    def do_update(self, dt: float, acc: Tuple[float, float]):
+        vx, vy = self.velocity
+        ax, ay = acc
+
+        # Semi-implicit Euler: update velocity first
+        vx += ax * dt
+        vy += ay * dt
+
+        px, py = self.position
+        px += vx * dt
+        py += vy * dt
+
+        self.velocity = (vx, vy)
+        self.position = (px, py)
+
+
 
 
 
@@ -125,3 +146,17 @@ class Earth(Planet):
             velocity=(0.0, -29.78),             #km/s
             mass=5.972e24,                      #kg
         )
+
+    def do_update(self, dt: float, acc: Tuple[float, float]):
+        super().do_update(dt, acc)
+        #print(
+       #     f"[EARTH DEBUG] pos=({self.position[0]:,.2f}, {self.position[1]:,.2f}) km, "
+       #     f"vel=({self.velocity[0]:.5f}, {self.velocity[1]:.5f}) km/s, "
+       #     f"rotation={self.rotation:.2f}°"
+       # )
+        # Earth's axial rotation
+        degrees_per_second = 360.0 / 86400.0  # degrees per second
+        self.rotation += dt * degrees_per_second
+
+        # Optional: wrap rotation between 0 and 360
+        self.rotation %= 360.0

@@ -9,6 +9,7 @@ from packet_types import PacketType, DataGramPacketType
 from typing import Set, Dict
 import aiohttp
 import struct
+import json
 
 class HttpClient:
     def __init__(self):
@@ -89,6 +90,14 @@ class ServerMissionControl:
         self.udp_server = None
         self.udp_endpoint_to_session: Dict[Tuple[str, int], Session] = {}
         self.chunk_manager = None
+        self.gamespeed = 2920
+        self.player_starting_cash = int(200000)
+        self.base_cash_per_second = 200
+        self.game_description = None
+        self.game_buildings_details = None
+        with open("game_desc.json", "r") as game_description_file:
+            self.game_description = json.load(game_description_file)
+            self.game_buildings_details = self.game_description.get("buildings")
 
     def get_next_agency_id(self):
         current = self.next_available_agency_id
@@ -142,9 +151,40 @@ class ControlServer:
             await server.serve_forever()
 
     async def loop_tasks(self):
+
+        asyncio.create_task(self.send_list_of_agencies_every_30_seconds())
+        asyncio.create_task(self.every_second())
+
+    async def send_list_of_agencies_every_30_seconds(self):
         while True:
             await self.send_list_of_agencies()
             await asyncio.sleep(30)
+
+    async def every_second(self):
+
+        while True:
+            #Update the money of each player
+            for _player in self.shared.players.values():
+                _player.get_money()
+
+
+            #Send the agency gamestates
+            for session in list(self.sessions):
+                if not session.alive or not hasattr(session, "player") or session.player is None:
+                    continue
+
+                agency_id = session.player.agency_id
+                agency = self.shared.agencies.get(agency_id)
+
+                if agency:
+                    try:
+                        packet = agency.generate_gamestate_packet()
+                        await session.send(packet)
+                    except Exception as e:
+                        print(f"⚠️ Failed to send agency gamestate to session {session.temp_id}: {e}")
+
+            await asyncio.sleep(1)
+
 
     async def handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         session = Session(reader, writer, self)
@@ -199,7 +239,7 @@ class ControlServer:
         steam_id = session.steam_id
         player = self.get_player_by_steamid(steam_id)
         if not player:
-            player = Player(session, steam_id)
+            player = Player(session, steam_id, self.shared)
             self.shared.players[steam_id] = player
         else:
             # 👇 IMPORTANT: re-bind the player to the new session

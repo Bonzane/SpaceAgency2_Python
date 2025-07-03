@@ -1,7 +1,7 @@
 import pickle
 from pathlib import Path
 from typing import List, Union
-from gameobjects import Sun, Earth, PhysicsObject, ObjectType
+from gameobjects import Sun, Earth, PhysicsObject, ObjectType, GameObject
 import numpy as np
 from physics import G
 from packet_types import DataGramPacketType
@@ -13,7 +13,7 @@ class Chunk:
         self.galaxy = galaxy
         self.system = system
         self.path = Path(filepath)
-        self.objects: List[PhysicsObject] = []
+        self.objects: List[GameObject] = []
         self.id_to_object = {}
         self.ready = False
         self.manager = managed_by
@@ -25,7 +25,7 @@ class Chunk:
     def is_ready(self) -> bool:
         return self.ready
 
-    def add_object(self, obj: PhysicsObject):
+    def add_object(self, obj: GameObject):
         self.objects.append(obj)
         self.id_to_object[obj.object_id] = obj
 
@@ -33,63 +33,65 @@ class Chunk:
         return value % (1 << 64)
 
     def update_objects(self, dt=1.0):
-        """Simple O(n^2) n-body simulation"""
-        n = len(self.objects)
+        # Filter physics-enabled objects
+        physics_objects = [obj for obj in self.objects if hasattr(obj, "mass")]
+        n = len(physics_objects)
         if n < 2:
             return
 
-        pos = np.array([obj.position for obj in self.objects])  # shape (n, 2)
-        vel = np.array([obj.velocity for obj in self.objects])  # shape (n, 2)
-        mass = np.array([obj.mass for obj in self.objects])     # shape (n,)
-
+        pos = np.array([obj.position for obj in physics_objects])
+        vel = np.array([obj.velocity for obj in physics_objects])
+        mass = np.array([obj.mass for obj in physics_objects])
         forces = np.zeros((n, 2))
 
-        # Brute-force pairwise calculation
+        # Compute gravitational forces
         for i in range(n):
             for j in range(i + 1, n):
                 diff = pos[j] - pos[i]
-                dist_sq = np.dot(diff, diff) + 1e-5  # avoid divide-by-zero
+                dist_sq = np.dot(diff, diff) + 1e-5
                 dist = np.sqrt(dist_sq)
                 force_mag = G * mass[i] * mass[j] / dist_sq
                 direction = diff / dist
-
                 force = force_mag * direction
                 forces[i] += force
-                forces[j] -= force  # Newton's third law
+                forces[j] -= force
 
-        # Update velocities and positions
+        # Call do_update() on all objects (physics and non-physics)
         chunkpacket = bytearray()
-        chunkpacket.append(DataGramPacketType.OBJECT_STREAM)  # u8
-        chunkpacket += struct.pack('<H', len(self.objects))  # u16: number of objects
+        chunkpacket.append(DataGramPacketType.OBJECT_STREAM)
+        chunkpacket += struct.pack('<H', len(self.objects))
 
-        for i, obj in enumerate(self.objects):
-            acc = forces[i] / obj.mass
-            vel[i] += acc * dt
-            pos[i] += vel[i] * dt
-            obj.velocity = tuple(vel[i])
-            obj.position = tuple(pos[i])
-            #Stream to players within the chunk
-            obj_x, obj_y = obj.position
-            obj_vx, obj_vy = obj.velocity
+        for i, obj in enumerate(physics_objects):
+            fx, fy = forces[i]
+            acc = (fx / obj.mass, fy / obj.mass)
+            obj.do_update(dt, acc)
+
+        for obj in self.objects:
+            if obj not in physics_objects:
+                obj.do_update(dt, (0.0, 0.0))
+
+            obj_x, obj_y = getattr(obj, "position", (0, 0))
+            obj_vx, obj_vy = getattr(obj, "velocity", (0, 0))
             chunkpacket += struct.pack(
-                '<QQQQQf',                   # < = little-endian
-                obj.object_id,                  # Q: uint64
-                self.signed_to_unsigned64(int(obj_x)),                
-                self.signed_to_unsigned64(int(obj_y)),                
-                self.signed_to_unsigned64(int(obj_vx)),               
-                self.signed_to_unsigned64(int(obj_vy)), 
-                obj.rotation             
+                '<QQQQQf',
+                obj.object_id,
+                self.signed_to_unsigned64(int(obj_x)),
+                self.signed_to_unsigned64(int(obj_y)),
+                self.signed_to_unsigned64(int(obj_vx)),
+                self.signed_to_unsigned64(int(obj_vy)),
+                obj.rotation
             )
 
         for player in self.manager.shared.players.values():
-            if(player.galaxy == self.galaxy and player.system == self.system):
+            if player.galaxy == self.galaxy and player.system == self.system:
                 session = player.session
                 if session and session.udp_port and session.alive:
                     addr = (session.remote_ip, session.udp_port)
                     # Demeter's law doesn't apply to python and we all know it
                     self.manager.shared.udp_server.transport.sendto(chunkpacket, addr)
 
-                    
+
+                        
 
 
     def serialize_chunk(self):

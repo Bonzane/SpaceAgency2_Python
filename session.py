@@ -103,7 +103,7 @@ class Session:
             exists = self.control_server.agency_with_name_exists(agency_name)
             ec = 1 if exists else 0
             if not exists:
-                new_agency = Agency(agency_name)
+                new_agency = Agency(agency_name, self.control_server.shared)
                 new_agency.is_public = is_public
                 new_agency.add_player(self.steam_id)
                 new_agency.manually_set_id(self.control_server.shared.get_next_agency_id())

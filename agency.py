@@ -1,48 +1,99 @@
+from dataclasses import dataclass, field
+from typing import Dict, List, Any
+import json
+import struct
+from packet_types import PacketType
+from buildings import Building, BuildingType
 
-
+@dataclass
 class Agency:
-    def __init__(self, name, initial_members=None):
-        self.members = list(initial_members) if initial_members else []
-        self.bases = [1]
-        self.name = name
-        self.id64 = 0
-        self.is_public = True
-        self.total_money = 0
+    name: str
+    shared: Any = field(repr=False) 
+    id64: int = 0
+    is_public: bool = True
+    members: List[int] = field(default_factory=list)
+    bases_to_buildings: Dict[int, List[Any]] = field(default_factory=dict)
+    total_money: int = 0
+    primarycolor: int = 0
+    secondarycolor: int = 0
 
-    def add_player(self, steam_id):
-        self.members.append(steam_id)
+    def __post_init__(self):
+        default_building = Building(BuildingType.EARTH_HQ, self.shared)
+        self.bases_to_buildings[2] = [default_building]
 
-    def remove_player(self, steam_id):
-        self.members = [id64 for id64 in self.members if id64 != steam_id]
+    # === Membership Methods ===
+    def add_player(self, steam_id: int) -> None:
+        if steam_id not in self.members:
+            self.members.append(steam_id)
 
-    def get_money(self, players_by_id):
-        self.total_money = sum(players_by_id[id64].money for id64 in self.members if id64 in players_by_id)
-        return self.total_money
+    def remove_player(self, steam_id: int) -> None:
+        if steam_id in self.members:
+            self.members.remove(steam_id)
 
-    def set_name(self, name):
-        self.agencyname = name
-
-    def manually_set_id(self, new_id):
-        self.id64 = new_id
-
-    def set_public(self, is_public):
-        self.is_public = is_public
-
-    def get_public(self):
-        return self.is_public
-
-    def get_member_count(self):
-        return len(self.members)
-
-    def get_id64(self):
-        return self.id64
-
-    def get_name(self):
-        return self.agencyname
-
-    def list_players(self):
+    def list_players(self) -> None:
         for id64 in self.members:
             print(f"Player: {id64}")
 
-    def set_id(newid):
-        self.id64 = newid
+    def get_member_count(self) -> int:
+        return len(self.members)
+
+    def get_all_players(self) -> List[Any]:
+        return [
+            self.shared.players[id64]
+            for id64 in self.members
+            if id64 in self.shared.players
+        ]
+
+    # === Identity / State Methods ===
+    def set_name(self, name: str) -> None:
+        self.name = name
+
+    def get_name(self) -> str:
+        return self.name
+
+    def manually_set_id(self, new_id: int) -> None:
+        self.id64 = new_id
+
+    def get_id64(self) -> int:
+        return self.id64
+
+    def set_public(self, is_public: bool) -> None:
+        self.is_public = is_public
+
+    def get_public(self) -> bool:
+        return self.is_public
+
+
+    # === Money / Data ===
+    def get_money(self) -> int:
+        self.total_money = sum(
+            self.shared.players[id64].money
+            for id64 in self.members
+            if id64 in self.shared.players
+        )
+        return self.total_money
+
+    def set_base_buildings(self, base_id: int, buildings: List[Any]) -> None:
+        self.bases_to_buildings[base_id] = buildings
+
+    def add_building_to_base(self, base_id: int, building: Any) -> None:
+        self.bases_to_buildings.setdefault(base_id, []).append(building)
+
+    # === Serialization ===
+
+    def generate_gamestate_packet(self) -> bytes:
+        bases_serialized = {
+            base_id: [building.to_json() for building in buildings]
+            for base_id, buildings in self.bases_to_buildings.items()
+        }
+            
+        data = {
+            "id": self.id64,
+            "mbrs": self.members,
+            "mny": self.get_money(),
+            "bases": bases_serialized
+        }
+        json_str = json.dumps(data)
+        json_bytes = json_str.encode('utf-8')
+        header = struct.pack("<H", PacketType.AGENCY_GAMESTATE)
+        return header + json_bytes
