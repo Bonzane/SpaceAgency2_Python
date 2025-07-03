@@ -6,7 +6,7 @@ from player import Player
 from agency import Agency
 import agency
 from packet_types import PacketType, DataGramPacketType
-from typing import Set, Dict
+from typing import Set, Dict, Tuple
 import aiohttp
 import struct
 import json
@@ -95,9 +95,12 @@ class ServerMissionControl:
         self.base_cash_per_second = 200
         self.game_description = None
         self.game_buildings_details = None
+        self.agency_default_attributes = None
+        self.server_global_cash_multiplier = 1.0
         with open("game_desc.json", "r") as game_description_file:
             self.game_description = json.load(game_description_file)
             self.game_buildings_details = self.game_description.get("buildings")
+            self.agency_default_attributes = self.game_description.get("agency_default_attributes", {})
 
     def get_next_agency_id(self):
         current = self.next_available_agency_id
@@ -163,10 +166,13 @@ class ControlServer:
     async def every_second(self):
 
         while True:
-            #Update the money of each player
+            #Generate player base income
             for _player in self.shared.players.values():
                 _player.get_money()
-
+            
+            #Generate agency-wide income
+            for _agency in self.shared.agencies.values():
+                _agency.generate_agency_income()
 
             #Send the agency gamestates
             for session in list(self.sessions):

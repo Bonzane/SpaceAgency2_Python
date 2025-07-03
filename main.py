@@ -118,6 +118,7 @@ async def main():
     missioncontrol.gamespeed = gamespeed
     missioncontrol.player_starting_cash = int(game_defaults.get("playerstartcash", 200000))
     missioncontrol.base_cash_per_second = int(game_defaults.get("basecashpersecond", 200))
+    missioncontrol.server_global_cash_multiplier = float(game_defaults.get("globalcashmultipler", 1.0))
     game = Game(game_files, tickrate, gamespeed, missioncontrol)
 
 

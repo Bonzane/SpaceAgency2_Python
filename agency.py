@@ -4,6 +4,7 @@ import json
 import struct
 from packet_types import PacketType
 from buildings import Building, BuildingType
+import copy
 
 @dataclass
 class Agency:
@@ -16,10 +17,15 @@ class Agency:
     total_money: int = 0
     primarycolor: int = 0
     secondarycolor: int = 0
+    unlocked_buildings: set = field(default_factory=set)
+    income_per_second: int = 0
 
     def __post_init__(self):
         default_building = Building(BuildingType.EARTH_HQ, self.shared)
         self.bases_to_buildings[2] = [default_building]
+        self.attributes = copy.deepcopy(self.shared.agency_default_attributes)
+
+
 
     # === Membership Methods ===
     def add_player(self, steam_id: int) -> None:
@@ -65,6 +71,8 @@ class Agency:
 
 
     # === Money / Data ===
+    # This one is just for retreiving the total money. This does NOT generate income. 
+    # For that use generate_agency_income()
     def get_money(self) -> int:
         self.total_money = sum(
             self.shared.players[id64].money
@@ -72,12 +80,46 @@ class Agency:
             if id64 in self.shared.players
         )
         return self.total_money
+    
+
+    def generate_agency_income(self) -> None:
+        #This method generates the total income of the agency based on all buildings and vessels, then divides it by all members.
+        income_from_buildings = 0
+        for building in self.get_all_buildings():
+            income_from_buildings += building.get_income_from_building()
+
+        total_income = income_from_buildings
+        total_income = total_income * self.shared.server_global_cash_multiplier
+
+        self.income_per_second = total_income
+        #Distribute the income to all members
+        if self.get_member_count() > 0:
+            income_per_member = total_income // self.get_member_count()
+            for id64 in self.members:
+                if id64 in self.shared.players:
+                    self.shared.players[id64].money += income_per_member
+
 
     def set_base_buildings(self, base_id: int, buildings: List[Any]) -> None:
         self.bases_to_buildings[base_id] = buildings
 
     def add_building_to_base(self, base_id: int, building: Any) -> None:
         self.bases_to_buildings.setdefault(base_id, []).append(building)
+
+    #Gets a list of all buildings currently built by the agency
+    def get_all_buildings(self) -> List[Building]:
+        all_buildings = []
+        for buildings in self.bases_to_buildings.values():
+            all_buildings.extend(buildings)
+        return all_buildings
+
+    #Gets all buildings that are unlocked by the agency, built or not
+    def get_all_unlocked_buildings(self) -> List[Any]:
+        self.unlocked_buildings = set()
+        for building_instance in self.get_all_buildings():
+            self.unlocked_buildings.update(
+                building_instance.get_building_unlocks()
+            )
 
     # === Serialization ===
 
@@ -91,7 +133,8 @@ class Agency:
             "id": self.id64,
             "mbrs": self.members,
             "mny": self.get_money(),
-            "bases": bases_serialized
+            "bases": bases_serialized, 
+            "mny_prsec" : self.income_per_second
         }
         json_str = json.dumps(data)
         json_bytes = json_str.encode('utf-8')

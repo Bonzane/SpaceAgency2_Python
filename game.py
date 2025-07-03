@@ -20,6 +20,8 @@ class Game:
         self.chunk_manager = ChunkManager(shared, self.universe_path, self)
         self.simsec_per_tick = simrate / tickrate
         self.shared = shared
+        self.playersdatafile = None
+        self.agenciesdatafile = None
 
 
         if not self.base_path.exists():
@@ -52,6 +54,12 @@ class Game:
         print("🚀 Creating universe, please wait...")
         try:
             (self.universe_path / "galaxies" / "1" / "systems").mkdir(parents=True, exist_ok=True)
+            with open(self.universe_path / "bigBang.txt", "w") as f:
+                f.write(f"This universe was created on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            with open(self.universe_path / "players.sa2") as f:
+                self.playersdatafile = f
+            with open(self.universe_path / "agencies.sa2") as f:
+                self.agenciesdatafile = f
         except Exception as e:
             print(f"❌ Failed to create base directories. (Does the server have permission to access your game path?)\nHere's the error: {e}")
             return False
@@ -83,8 +91,10 @@ class Game:
         print("📍 Added The Sun")
         earth = gameobjects.Earth()
         print("📍 Added Earth")
+        luna = gameobjects.Luna(earth)
+        print("📍 Added The Moon")
         with open(chunk_path, "wb") as file:
-            pickle.dump([sun, earth], file)
+            pickle.dump([sun, earth, luna], file)
 
 
         print("✅ Created Home Chunk")

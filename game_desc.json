@@ -8,7 +8,26 @@
             "cost" : 0, 
             "build_time" : 10,
             "description" : "This building represents your agency's base on Earth. A great home base!",
+            "upgrade_costs" : {
+                "2" : 50000,
+                "3" : 100000
+            },
             "attributes" : {
+                "base_income" : 200,
+                "buildinglevel-unlocks" : {
+                    "1" : {
+                        "unlock_buildings" : [1, 2, 3],
+                        "add_base_income" : 100
+                    }, 
+                    "2" : {
+                        "unlock_buildings" : [4],
+                        "add_base_income" : 100
+                    },
+                    "3" : {
+                        "unlock_buildings" : [5],
+                        "add_base_income" : 100
+                    }
+                }
             }
         },
         {
@@ -16,6 +35,7 @@
             "name" : "Launchpad", 
             "cost" : 1000, 
             "build_time" : 5,
+            "upgrade_costs" : {},
             "description" : "Construct and launch vessels into space from this launchpad.",
             "attributes" : {
             }
@@ -25,6 +45,7 @@
             "name" : "Network Tower", 
             "cost" : 1000, 
             "build_time" : 10,
+            "upgrade_costs" : {},
             "description" : "The Network Tower can upgrade your agency's communication capabilities, making communication satellites more effective.",
             "attributes" : {
             }
@@ -35,5 +56,11 @@
     "planet_to_buildings"   :
     {
         "Earth" : [1, 2, 3]
+    }, 
+
+    "agency_default_attributes" : {
+        "global_cash_multiplier" : 1.0,
+        "global_build_time_multiplier" : 1.0
     }
+        
 }

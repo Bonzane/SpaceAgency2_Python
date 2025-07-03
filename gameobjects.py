@@ -2,15 +2,17 @@ from enum import Enum, IntEnum, auto
 import pickle
 from dataclasses import dataclass, field
 import itertools
-from typing import Tuple
+from typing import Tuple, Union
 import numpy as np
+import math
+from physics import G
 
 
 class ObjectType(IntEnum):
     UNDEFINED = 0
     SUN = 1
     EARTH = 2
-    MOON = 3
+    LUNA = 3
     MARS = 4
     VENUS = 5
     MERCURY = 6
@@ -68,6 +70,13 @@ class PhysicsData:
     velocity: Vector2D = field(default_factory=lambda: Vector2D(0.0, 0.0))
     angular_velocity: float = 0.0
     mass_kg: float = 1.0
+
+def direction_between_degrees(p1, p2):
+    dx = p2[0] - p1[0]
+    dy = p2[1] - p1[1]
+    angle_rad = math.atan2(dy, dx)
+    angle_deg = math.degrees(angle_rad)
+    return angle_deg
 
 
 # ---------------- Base Object ----------------
@@ -127,7 +136,46 @@ class PhysicsObject(GameObject):
 #Planet extends physicsobject lmaooooooo
 @dataclass
 class Planet(PhysicsObject):
-    pass
+    orbits: Union["Planet", None] = None  # Reference to the object this body orbits
+    orbit_radius: float = 0.0             # Optional: used for orbit correction
+    orbit_direction: int = 1              # 1 = counterclockwise, -1 = clockwise
+
+    def do_update(self, dt: float, acc: Tuple[float, float]):
+        if self.orbits:
+            self.correct_orbit(dt)
+        else:
+            super().do_update(dt, acc)
+
+
+    def correct_orbit(self, dt):
+        if self.orbits is None:
+            return
+
+        cx, cy = self.orbits.position
+        px, py = self.position
+
+        dx = px - cx
+        dy = py - cy
+        r = np.sqrt(dx**2 + dy**2)
+        self.orbit_radius = r  # optionally store
+
+        # Normalize the direction perpendicular to the radius vector
+        tangent = np.array([-dy, dx]) * self.orbit_direction
+        tangent /= np.linalg.norm(tangent)
+
+        # Circular orbital velocity
+        v = np.sqrt(G * self.orbits.mass / r)
+
+        self.velocity = (
+            self.orbits.velocity[0] + tangent[0] * v,
+            self.orbits.velocity[1] + tangent[1] * v,
+        )
+
+        # Optional: snap to exact orbit path
+        self.position = (
+            cx + dx / r * self.orbit_radius,
+            cy + dy / r * self.orbit_radius
+        )
 
 class Sun(Planet):
     def __init__(self):
@@ -160,3 +208,26 @@ class Earth(Planet):
 
         # Optional: wrap rotation between 0 and 360
         self.rotation %= 360.0
+
+class Luna(Planet):
+    def __init__(self, earth: Earth):
+        moon_distance = 384_400.0  # km
+        moon_mass = 7.342e22       # kg
+
+        # Set initial position relative to Earth
+        moon_x = earth.position[0] + moon_distance
+        moon_y = earth.position[1]
+
+        super().__init__(
+            object_type=ObjectType.LUNA,
+            position=(moon_x, moon_y),
+            velocity=(0.0, 0.0),  # Will be corrected
+            mass=moon_mass,
+            orbits=earth,
+            orbit_radius=moon_distance,
+        )
+
+    def do_update(self, dt:float, acc: Tuple[float, float]):
+        super().do_update(dt, acc)
+        #TIDALLY LOCK THE MOON
+        self.rotation = direction_between_degrees(self.position, self.orbits.position)

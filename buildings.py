@@ -16,6 +16,9 @@ class Building:
         self.level = 1
         #GET DEFAULT DATA ABOUT THIS TYPE OF BUILDING
         self.default_data = self.shared.game_buildings_details.get(type, {})
+        self.attributes = self.default_data.get("attributes", {})
+        self.unlocks = self.attributes.get("buildinglevel_unlocks", {})
+
         self.construction_time = self.default_data.get("construction_time", 0)
         pass
 
@@ -25,6 +28,27 @@ class Building:
             if self.construction_progress >= self.construction_time:
                 self.constructed = True
                 self.construction_progress = 0
+
+    def get_income_from_building(self):
+        income = 0
+        if self.constructed:
+            income = self.attributes.get("base_income", 0)
+            for level in self.unlocks:
+                if self.level >= int(level):
+                    income += self.unlocks[level].get("add_base_income", 0)
+        return income
+
+    #RETURNS A LIST OF BUILDINGS THAT THIS BUILDING HAS UNLOCKED AT ITS CURRENT LEVEL
+    def get_building_unlocks(self):
+        unlocked_buildings = []
+        if(self.constructed):
+            for level in self.unlocks:
+                if self.level >= int(level):
+                    unlocked_buildings.extend(self.unlocks[level].get("unlock_buildings", []))
+        return unlocked_buildings
+            
+    # 
+        
 
     def to_json(self):
         return {

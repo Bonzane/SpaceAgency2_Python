@@ -1,6 +1,7 @@
 import asyncio
 from packet_types import PacketType
 from agency import Agency
+import json
 
 # A session connects a TCP socket to a server-side player
 
@@ -35,7 +36,16 @@ class Session:
     def assign_temp_id(self):
         self.temp_id = self.control_server.get_next_temp_id()
 
+    def send_game_json_packet(self):
+        packet = bytearray()
+        packet += PacketType.GAME_JSON.to_bytes(2, 'little')
+        gamedesc = self.control_server.shared.game_desc
+        game_json = json.dumps(gamedesc.__dict__)
+        packet += game_json.encode('utf-8')
+        self.send(packet)
+
     async def send_welcome(self):
+        self.send_game_json_packet()
         print(f"[+] Connection from {self.remote_ip}, assigned ID {self.temp_id}")
 
     async def read_and_process_packet(self):
