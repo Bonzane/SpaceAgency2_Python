@@ -14,7 +14,7 @@
             },
             "attributes" : {
                 "base_income" : 200,
-                "buildinglevel-unlocks" : {
+                "buildinglevel_unlocks" : {
                     "1" : {
                         "unlock_buildings" : [1, 2, 3],
                         "add_base_income" : 100

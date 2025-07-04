@@ -36,16 +36,15 @@ class Session:
     def assign_temp_id(self):
         self.temp_id = self.control_server.get_next_temp_id()
 
-    def send_game_json_packet(self):
+    async def send_game_json_packet(self):
         packet = bytearray()
         packet += PacketType.GAME_JSON.to_bytes(2, 'little')
-        gamedesc = self.control_server.shared.game_desc
-        game_json = json.dumps(gamedesc.__dict__)
+        gamedesc = self.control_server.shared.game_description
+        game_json = json.dumps(gamedesc)
         packet += game_json.encode('utf-8')
-        self.send(packet)
+        await self.send(packet)
 
     async def send_welcome(self):
-        self.send_game_json_packet()
         print(f"[+] Connection from {self.remote_ip}, assigned ID {self.temp_id}")
 
     async def read_and_process_packet(self):
@@ -63,6 +62,8 @@ class Session:
             await self.control_server.tell_everyone_player_joined(self.steam_id)
             await asyncio.sleep(0.25)
             await self.control_server.tell_session_info_about_everyone(self)
+            await asyncio.sleep(0.25)
+            await self.send_game_json_packet()
 
         elif function_code == PacketType.TCP_SERVER_TELL_CONNECTED_PLAYERS:
             print("Got a 1????????????")

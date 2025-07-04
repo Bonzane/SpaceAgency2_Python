@@ -94,12 +94,14 @@ class ServerMissionControl:
         self.player_starting_cash = int(200000)
         self.base_cash_per_second = 200
         self.game_description = None
-        self.game_buildings_details = None
+        self.game_buildings_list = None
+        self.buildings_by_id = None
         self.agency_default_attributes = None
         self.server_global_cash_multiplier = 1.0
         with open("game_desc.json", "r") as game_description_file:
             self.game_description = json.load(game_description_file)
-            self.game_buildings_details = self.game_description.get("buildings")
+            self.game_buildings_list = self.game_description.get("buildings")
+            self.buildings_by_id = {b["id"]: b for b in self.game_buildings_list}
             self.agency_default_attributes = self.game_description.get("agency_default_attributes", {})
 
     def get_next_agency_id(self):
@@ -168,11 +170,15 @@ class ControlServer:
         while True:
             #Generate player base income
             for _player in self.shared.players.values():
-                _player.get_money()
+                _player.gain_money()
             
             #Generate agency-wide income
             for _agency in self.shared.agencies.values():
                 _agency.generate_agency_income()
+                #Update Buildings and their build time
+                for _building in _agency.get_all_buildings():
+                    _building.update()
+
 
             #Send the agency gamestates
             for session in list(self.sessions):

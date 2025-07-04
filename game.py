@@ -56,9 +56,9 @@ class Game:
             (self.universe_path / "galaxies" / "1" / "systems").mkdir(parents=True, exist_ok=True)
             with open(self.universe_path / "bigBang.txt", "w") as f:
                 f.write(f"This universe was created on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-            with open(self.universe_path / "players.sa2") as f:
+            with open(self.universe_path / "players.sa2", "w") as f:
                 self.playersdatafile = f
-            with open(self.universe_path / "agencies.sa2") as f:
+            with open(self.universe_path / "agencies.sa2", "w") as f:
                 self.agenciesdatafile = f
         except Exception as e:
             print(f"❌ Failed to create base directories. (Does the server have permission to access your game path?)\nHere's the error: {e}")

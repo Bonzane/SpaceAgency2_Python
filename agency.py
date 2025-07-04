@@ -21,7 +21,7 @@ class Agency:
     income_per_second: int = 0
 
     def __post_init__(self):
-        default_building = Building(BuildingType.EARTH_HQ, self.shared)
+        default_building = Building(BuildingType.EARTH_HQ, self.shared, 7)
         self.bases_to_buildings[2] = [default_building]
         self.attributes = copy.deepcopy(self.shared.agency_default_attributes)
 
@@ -89,12 +89,12 @@ class Agency:
             income_from_buildings += building.get_income_from_building()
 
         total_income = income_from_buildings
-        total_income = total_income * self.shared.server_global_cash_multiplier
+        total_income = int(total_income * self.shared.server_global_cash_multiplier)
 
         self.income_per_second = total_income
         #Distribute the income to all members
         if self.get_member_count() > 0:
-            income_per_member = total_income // self.get_member_count()
+            income_per_member = int(total_income // self.get_member_count())
             for id64 in self.members:
                 if id64 in self.shared.players:
                     self.shared.players[id64].money += income_per_member
@@ -120,6 +120,7 @@ class Agency:
             self.unlocked_buildings.update(
                 building_instance.get_building_unlocks()
             )
+        return list(self.unlocked_buildings)
 
     # === Serialization ===
 
@@ -134,7 +135,8 @@ class Agency:
             "mbrs": self.members,
             "mny": self.get_money(),
             "bases": bases_serialized, 
-            "mny_prsec" : self.income_per_second
+            "mny_prsec" : self.income_per_second, 
+            "buildable" : self.get_all_unlocked_buildings()
         }
         json_str = json.dumps(data)
         json_bytes = json_str.encode('utf-8')

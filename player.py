@@ -23,7 +23,8 @@ class Player:
             self.x = tracked_object.x
             self.y = tracked_object.y
 
-    def get_money(self):
+    def gain_money(self):
         gain = self.shared.base_cash_per_second
 
         self.money = self.money + gain
+

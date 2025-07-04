@@ -8,16 +8,18 @@ class BuildingType(IntEnum):
 
 
 class Building:
-    def __init__(self, type, shared):
+    def __init__(self, type, shared, position_angle):
         self.type = type
         self.shared = shared
+        self.position_angle = position_angle
         self.construction_progress = 0
         self.constructed = False
         self.level = 1
         #GET DEFAULT DATA ABOUT THIS TYPE OF BUILDING
-        self.default_data = self.shared.game_buildings_details.get(type, {})
+        self.default_data = self.shared.buildings_by_id.get(type, {})
         self.attributes = self.default_data.get("attributes", {})
         self.unlocks = self.attributes.get("buildinglevel_unlocks", {})
+
 
         self.construction_time = self.default_data.get("construction_time", 0)
         pass
@@ -55,5 +57,6 @@ class Building:
             "type": self.type,
             "constructed": self.constructed,
             "level": self.level,
-            "construction_progress": self.construction_progress
+            "construction_progress": self.construction_progress, 
+            "position_angle" : self.position_angle
         }
