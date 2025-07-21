@@ -21,7 +21,7 @@ class Building:
         self.unlocks = self.attributes.get("buildinglevel_unlocks", {})
 
 
-        self.construction_time = self.default_data.get("construction_time", 0)
+        self.construction_time = self.default_data.get("build_time", 0)
         pass
 
     def update(self):
@@ -49,7 +49,15 @@ class Building:
                     unlocked_buildings.extend(self.unlocks[level].get("unlock_buildings", []))
         return unlocked_buildings
             
-    # 
+    # SAME BUT FOR COMPONENTS
+    def get_component_unlocks(self):
+        unlocked_components = []
+        if(self.constructed):
+            for level in self.unlocks:
+                if self.level >= int(level):
+                    unlocked_components.extend(self.unlocks[level].get("unlock_components", []))
+        return unlocked_components
+            
         
 
     def to_json(self):

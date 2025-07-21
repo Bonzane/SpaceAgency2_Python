@@ -86,6 +86,7 @@ class ServerMissionControl:
         self.streaming_port = None
         self.external_control_port = None
         self.external_streaming_port = None
+        self.component_data = None
         self.next_available_agency_id = 5
         self.udp_server = None
         self.udp_endpoint_to_session: Dict[Tuple[str, int], Session] = {}
@@ -101,6 +102,9 @@ class ServerMissionControl:
         with open("game_desc.json", "r") as game_description_file:
             self.game_description = json.load(game_description_file)
             self.game_buildings_list = self.game_description.get("buildings")
+            self.component_data = {
+                comp["id"]: comp for comp in self.game_description["components"]
+            }
             self.buildings_by_id = {b["id"]: b for b in self.game_buildings_list}
             self.agency_default_attributes = self.game_description.get("agency_default_attributes", {})
 
@@ -488,6 +492,31 @@ class StreamingServer:
             self.transport.sendto(response, addr)
 
 
+        elif data[0] == DataGramPacketType.RESOLVE_VESSEL:
+            if len(data) < 9:
+                print("⚠️ Invalid RESOLVE_VESSEL packet length.")
+                return   
+            vessel_id = int.from_bytes(data[1:9], 'little')
+            key = (ip, port)
+            session = self.shared.udp_endpoint_to_session.get(key)
+            if not session:
+                print(f"❌ Unknown session for {key}")
+                return
+            player = session.player
+            if not player:
+                print(f"❌ No player bound to session {session.temp_id}")
+                return
+            chunk_key = (player.galaxy, player.system)
+            chunk = self.shared.chunk_manager.loaded_chunks.get(chunk_key)
+            if not chunk:
+                print(f"❌ Couldn't find chunk {chunk_key}")
+                return
+            vessel = chunk.get_object_by_id(vessel_id)
+            #Note - this will actually be sending the response as TCP with included JSON
+            # even though it's a response to a UDP packet. 
+            asyncio.create_task(session.send(self.build_resolve_vessel_packet(vessel)))
+
+
 
     def error_received(self, exc):
         print(f"⚠️ UDP error received: {exc}")
@@ -499,6 +528,21 @@ class StreamingServer:
         while True:
             self.send_player_details()
             await asyncio.sleep(1 / 60)  
+
+    def build_resolve_vessel_packet(self, vessel):
+        print("Sending vessel resolve packet")
+        packet = bytearray()
+        packet += struct.pack('<H', PacketType.RESOLVE_VESSEL_REPLY)
+        #ID of instance being resolved
+        packet += struct.pack('<Q', vessel.object_id) 
+        name = vessel.name
+        packet += name.encode('utf-8') + b'\x00'
+        components = vessel.components
+        packet += struct.pack('<H', len(components))
+        for comp in components:
+            packet += struct.pack('<Hff', comp.id, comp.x, comp.y)
+        return packet   
+
 
     def send_player_details(self):
         packet = bytearray()

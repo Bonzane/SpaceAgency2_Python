@@ -6,7 +6,7 @@
             "id" : 1,
             "name" : "Earth Headquarters", 
             "cost" : 0, 
-            "build_time" : 10,
+            "build_time" : 5,
             "description" : "This building represents your agency's base on Earth. A great home base!",
             "upgrade_costs" : {
                 "2" : 50000,
@@ -17,6 +17,7 @@
                 "buildinglevel_unlocks" : {
                     "1" : {
                         "unlock_buildings" : [1, 2, 3],
+                        "unlock_components" : [1, 2, 3, 4],
                         "add_base_income" : 100
                     }, 
                     "2" : {
@@ -43,8 +44,8 @@
         {
             "id" : 3,
             "name" : "Network Tower", 
-            "cost" : 1000, 
-            "build_time" : 10,
+            "cost" : 50000, 
+            "build_time" : 30,
             "upgrade_costs" : {},
             "description" : "The Network Tower can upgrade your agency's communication capabilities, making communication satellites more effective.",
             "attributes" : {
@@ -61,6 +62,91 @@
     "agency_default_attributes" : {
         "global_cash_multiplier" : 1.0,
         "global_build_time_multiplier" : 1.0
-    }
+    }, 
+    "components" : [
+        {
+            "id" : 1,
+            "name" : "Standard Hull", 
+            "cost" : 30000,
+            "mass" : 600,
+            "attributes" : {
+                "fuel" : 1000
+            }, 
+            "snap_points" : [
+                {
+                    "x" : 0,
+                    "y" : -128,
+                    "snaps_accepted" : ["fuel-give", "fairing-give"], 
+                    "snaps_provided" : ["fairing-receive", "fuel-receive"]
+                }, 
+                {
+                    "x" : 0,
+                    "y" : 128,
+                    "snaps_accepted" : ["fuel-receive"], 
+                    "snaps_provided" : ["fuel-give"]
+                }
+            ]
+
+        }, 
+        {
+            "id" : 2,
+            "name" : "Medium Payload Fairing", 
+            "cost" : 10000,
+            "mass" : 50,
+            "attributes" : {
+                "accepts-payloads" : [3]
+            }, 
+            "snap_points" : [
+                {
+                    "x" : 0,
+                    "y" : 128,
+                    "snaps_accepted" : ["fairing-receive"],
+                    "snaps_provided" : ["fairing-give"]
+                },
+                {
+                    "x" : 0,
+                    "y" : 0,
+                    "snaps_accepted" : ["payload-give"],
+                    "snaps_provided" : ["payload-receive"]
+                }
+            ]
+
+        }, 
+        {
+            "id" : 3,
+            "name" : "Communication Satellite", 
+            "cost" : 20000,
+            "mass" : 100,
+            "attributes" : {
+                "is-payload" : 1
+            }, 
+            "snap_points" : [
+                {
+                    "x" : 0,
+                    "y" : 0,
+                    "snaps_accepted" : ["payload-receive"],
+                    "snaps_provided" : ["payload-give"]
+                }
+            ]
+
+        }, 
+        {
+            "id" : 4,
+            "name" : "Standard Thruster", 
+            "cost" : 20000,
+            "mass" : 100,
+            "attributes" : {},
+            "snap_points" : [
+                {
+                    "x" : 0,
+                    "y" : -128,
+                    "snaps_accepted" : ["fuel-give"],
+                    "snaps_provided" : ["fuel-receive"]
+                }
+            ]
+
+
+        }           
+    ]
         
 }

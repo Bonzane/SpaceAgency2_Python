@@ -2,6 +2,8 @@ import asyncio
 from packet_types import PacketType
 from agency import Agency
 import json
+from buildings import Building
+from vessels import Vessel, AttachedVesselComponent, construct_vessel_from_request
 
 # A session connects a TCP socket to a server-side player
 
@@ -134,6 +136,62 @@ class Session:
             if not self.alive:
                 self.alive = True
             await self.send(packet)
+
+        elif function_code == PacketType.CONSTRUCT_BUILDING:
+            try:
+                payload = await self.reader.readexactly(12)
+                object_id = int.from_bytes(payload[0:8], 'little')
+                building_type = int.from_bytes(payload[8:10], 'little')
+                position_angle = int.from_bytes(payload[10:12], 'little')
+                print(f"🏗️ Construct Building Request:")
+                print(f"   - Planet Object ID: {object_id}")
+                print(f"   - Building Type: {building_type}")
+                print(f"   - Position Angle: {position_angle}")
+                player = self.control_server.get_player_by_steamid(self.steam_id)
+                if player is None or player.agency_id not in self.control_server.shared.agencies:
+                    print("⚠️ Invalid player or agency")
+                    return   
+                agency = self.control_server.shared.agencies[player.agency_id]
+                building_data = self.control_server.shared.buildings_by_id.get(building_type)
+                if not building_data:
+                    print(f"❌ Invalid building type: {building_type}")
+                    return
+
+                cost = building_data.get("cost", 0)
+                if player.money < cost:
+                    print(f"❌ Player {self.steam_id} cannot afford building (needs {cost}, has {player.money})")
+                    return 
+                player.money -= cost
+                new_building = Building(building_type, self.control_server.shared, position_angle)
+                agency.add_building_to_base(object_id, new_building)
+
+        
+            except Exception as e:
+                print(f"❌ Session Failed to process CONSTRUCT_BUILDING: {e}")           
+
+
+        elif function_code == PacketType.CONSTRUCT_VESSEL:
+            try:
+                raw_json_bytes = await self.reader.readuntil(b'\x00')
+                raw_json = raw_json_bytes[:-1].decode('utf-8')  # remove the null terminator
+                vessel_request_data = json.loads(raw_json)
+                print("🛠️ Received CONSTRUCT_VESSEL JSON:")
+                print(json.dumps(vessel_request_data, indent=4))
+
+                # GET THE PLAYER AND AGENCY THAT WANT TO CONSTRUCT THIS VESSEL
+                player = self.control_server.get_player_by_steamid(self.steam_id)
+                if player is None or player.agency_id not in self.control_server.shared.agencies:
+                    print("⚠️ Invalid player or agency")
+                    return
+
+                agency = self.control_server.shared.agencies[player.agency_id]
+                # Construct the vessel from the request data
+                vessel = construct_vessel_from_request(self.control_server.shared, player, vessel_request_data)
+              
+
+            except Exception as e:
+                print(f"❌ Failed to process CONSTRUCT_VESSEL: {e}")
+
 
         else:
             print(f"🔴 Unknown function code: {function_code}")

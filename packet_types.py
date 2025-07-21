@@ -18,6 +18,9 @@ class PacketType(IntEnum):
     JOIN_PUBLIC_AGENCY = 0x000D
     AGENCY_GAMESTATE = 0x000E
     GAME_JSON = 0x000F
+    CONSTRUCT_BUILDING = 0x0010
+    CONSTRUCT_VESSEL = 0x0011
+    RESOLVE_VESSEL_REPLY = 0x0012
 
 
 class DataGramPacketType(IntEnum):
@@ -26,6 +29,7 @@ class DataGramPacketType(IntEnum):
     UDP_ASK_ABOUT_AGENCY = 0x02
     OBJECT_STREAM = 0x03
     OBJECT_INQUIRY = 0x04
+    RESOLVE_VESSEL = 0x05
 
 
 class ChatMessage(IntEnum):

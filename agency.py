@@ -5,6 +5,7 @@ import struct
 from packet_types import PacketType
 from buildings import Building, BuildingType
 import copy
+from vessels import Vessel
 
 @dataclass
 class Agency:
@@ -18,11 +19,16 @@ class Agency:
     primarycolor: int = 0
     secondarycolor: int = 0
     unlocked_buildings: set = field(default_factory=set)
+    unlocked_components: set = field(default_factory=set)
+    vessels: List[Vessel] = field(default_factory=list)
     income_per_second: int = 0
+    
 
     def __post_init__(self):
         default_building = Building(BuildingType.EARTH_HQ, self.shared, 7)
         self.bases_to_buildings[2] = [default_building]
+        self.bases_to_buildings[3] = []
+        self.bases_to_buildings[1] = []
         self.attributes = copy.deepcopy(self.shared.agency_default_attributes)
 
 
@@ -68,6 +74,12 @@ class Agency:
 
     def get_public(self) -> bool:
         return self.is_public
+    
+    def add_vessel(self, vessel: Vessel) -> None:
+        self.vessels.append(vessel)
+
+    def get_all_vessels(self) -> List[Vessel]:
+        return self.vessels
 
 
     # === Money / Data ===
@@ -122,6 +134,14 @@ class Agency:
             )
         return list(self.unlocked_buildings)
 
+    def get_all_unlocked_components(self) -> List[Any]:
+        self.unlocked_components = set()
+        for building_instance in self.get_all_buildings():
+            self.unlocked_components.update(
+                building_instance.get_component_unlocks()
+            )
+        return list(self.unlocked_components)
+
     # === Serialization ===
 
     def generate_gamestate_packet(self) -> bytes:
@@ -136,7 +156,9 @@ class Agency:
             "mny": self.get_money(),
             "bases": bases_serialized, 
             "mny_prsec" : self.income_per_second, 
-            "buildable" : self.get_all_unlocked_buildings()
+            "buildable" : self.get_all_unlocked_buildings(),
+            "components" : self.get_all_unlocked_components(), 
+            "vsls" :  [v.get_id() for v in self.get_all_vessels()],
         }
         json_str = json.dumps(data)
         json_bytes = json_str.encode('utf-8')

@@ -52,6 +52,7 @@ class ObjectType(IntEnum):
     SAGITTARIUS_A_BLACKHOLE = 40
     PROCEDURAL_ROCKY_PLANET = 41
     PROCEDURAL_GAS_GIANT = 42
+    BASIC_VESSEL = 43
 
 # ID GEN
 _object_id_counter = itertools.count(1)
@@ -128,8 +129,6 @@ class PhysicsObject(GameObject):
 
         self.velocity = (vx, vy)
         self.position = (px, py)
-
-
 
 
 
@@ -218,16 +217,30 @@ class Luna(Planet):
         moon_x = earth.position[0] + moon_distance
         moon_y = earth.position[1]
 
+        # Tangent vector for initial orbit
+        dx = moon_x - earth.position[0]
+        dy = moon_y - earth.position[1]
+        r_vec = np.array([dx, dy])
+        r = np.linalg.norm(r_vec)
+        tangent = np.array([-dy, dx]) / r
+        v_mag = np.sqrt(G * earth.mass / r)
+        vx, vy = earth.velocity[0] + tangent[0] * v_mag, earth.velocity[1] + tangent[1] * v_mag
+
         super().__init__(
             object_type=ObjectType.LUNA,
             position=(moon_x, moon_y),
-            velocity=(0.0, 0.0),  # Will be corrected
+            velocity=(vx, vy),
             mass=moon_mass,
-            orbits=earth,
+            orbits=earth,  # used only for rotation
             orbit_radius=moon_distance,
         )
 
-    def do_update(self, dt:float, acc: Tuple[float, float]):
-        super().do_update(dt, acc)
-        #TIDALLY LOCK THE MOON
-        self.rotation = direction_between_degrees(self.position, self.orbits.position)
+    def do_update(self, dt: float, acc: Tuple[float, float]):
+        # Skip orbit correction and apply real physics
+        PhysicsObject.do_update(self, dt, acc)
+
+        # Update rotation to face the Earth (tidally locked)
+        if self.orbits:
+            self.rotation = direction_between_degrees(self.position, self.orbits.position)
+
+      
