@@ -6,3 +6,5 @@ class Components(IntEnum):
     PAYLOAD_FAIRING_BASIC = 2
     DEPLOYED_COMMUNICATION_SATELLITE = 3
     ENGINE_BASIC = 4
+    
+

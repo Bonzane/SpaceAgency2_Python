@@ -371,6 +371,7 @@ class StreamingServer:
         self.port = listens_on_port
         self.active = False #The server must be "activated"
         self.control = controlserver
+        self.objstream_seq = 0
 
     def activate(self):
         print(f"🟢 Streaming Server Activated on port {self.port}")
@@ -540,7 +541,7 @@ class StreamingServer:
         components = vessel.components
         packet += struct.pack('<H', len(components))
         for comp in components:
-            packet += struct.pack('<Hff', comp.id, comp.x, comp.y)
+            packet += struct.pack('<Hhh', comp.id, comp.x, comp.y)
         return packet   
 
 

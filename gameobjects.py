@@ -114,6 +114,7 @@ class PhysicsObject(GameObject):
     position: Tuple[float, float] = (0.0, 0.0)
     velocity: Tuple[float, float] = (0.0, 0.0)
     mass: float = 1.0
+    radius_km: float = 10.0  # Default for non-planetary objects
 
     def do_update(self, dt: float, acc: Tuple[float, float]):
         vx, vy = self.velocity
@@ -183,6 +184,7 @@ class Sun(Planet):
             position=(0.0, 0.0),
             velocity=(0.0, 0.0),
             mass=1.989e30,
+            radius_km=695700.0  # Sun radius
         )
 
 class Earth(Planet):
@@ -192,6 +194,7 @@ class Earth(Planet):
             position=(152_000_000.0, 0.0),      #km
             velocity=(0.0, -29.78),             #km/s
             mass=5.972e24,                      #kg
+            radius_km=6371.0
         )
 
     def do_update(self, dt: float, acc: Tuple[float, float]):
@@ -233,6 +236,7 @@ class Luna(Planet):
             mass=moon_mass,
             orbits=earth,  # used only for rotation
             orbit_radius=moon_distance,
+            radius_km=1737.0
         )
 
     def do_update(self, dt: float, acc: Tuple[float, float]):

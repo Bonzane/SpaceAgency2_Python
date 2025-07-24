@@ -1,3 +1,4 @@
+import math
 import pickle
 from pathlib import Path
 from typing import List, Union
@@ -48,17 +49,29 @@ class Chunk:
         for i in range(n):
             for j in range(i + 1, n):
                 diff = pos[j] - pos[i]
-                dist_sq = np.dot(diff, diff) + 1e-5
-                dist = np.sqrt(dist_sq)
-                force_mag = G * mass[i] * mass[j] / dist_sq
-                direction = diff / dist
+                
+                # Clamp distance using the radius of object j (or i, or both — here we use j)
+                min_radius_m = getattr(physics_objects[j], 'radius_km', 10.0) * 1000
+                raw_dist_sq = np.dot(diff, diff)
+                clamped_dist_sq = max(raw_dist_sq, min_radius_m ** 2)
+                clamped_dist = math.sqrt(clamped_dist_sq)
+
+                # Compute force using clamped distance
+                force_mag = G * mass[i] * mass[j] / clamped_dist_sq
+                direction = diff / clamped_dist
                 force = force_mag * direction
+
                 forces[i] += force
                 forces[j] -= force
+
 
         # Call do_update() on all objects (physics and non-physics)
         chunkpacket = bytearray()
         chunkpacket.append(DataGramPacketType.OBJECT_STREAM)
+        chunkpacket += struct.pack('<H',  self.manager.shared.udp_server.objstream_seq)
+        self.manager.shared.udp_server.objstream_seq += 1
+        if(self.manager.shared.udp_server.objstream_seq > 65534):
+            self.manager.shared.udp_server.objstream_seq = 0
         chunkpacket += struct.pack('<H', len(self.objects))
 
         for i, obj in enumerate(physics_objects):

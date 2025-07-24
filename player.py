@@ -16,12 +16,13 @@ class Player:
         self.system = 1
         self.agency_id = 0
         self.shared = shared
+        self.controlled_vessel_id = -1
 
 
     def update_location(self):
-       if(tracked_object != none): 
-            self.x = tracked_object.x
-            self.y = tracked_object.y
+       if(self.tracked_object != 0): 
+            self.x = self.tracked_object.x
+            self.y = self.tracked_object.y
 
     def gain_money(self):
         gain = self.shared.base_cash_per_second

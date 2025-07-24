@@ -3,7 +3,7 @@ from packet_types import PacketType
 from agency import Agency
 import json
 from buildings import Building
-from vessels import Vessel, AttachedVesselComponent, construct_vessel_from_request
+from vessels import Vessel, AttachedVesselComponent, construct_vessel_from_request, VesselControl
 
 # A session connects a TCP socket to a server-side player
 
@@ -187,10 +187,49 @@ class Session:
                 agency = self.control_server.shared.agencies[player.agency_id]
                 # Construct the vessel from the request data
                 vessel = construct_vessel_from_request(self.control_server.shared, player, vessel_request_data)
-              
+                vessel.calculate_vessel_stats()
 
             except Exception as e:
                 print(f"❌ Failed to process CONSTRUCT_VESSEL: {e}")
+
+        elif function_code == PacketType.VESSEL_CONTROL:
+            print("received a vessel control")
+            #If it's anything other than request_control, they must be already controlling the vessel.
+            vesselID = await self.reader.readexactly(8)
+            vessel_id = int.from_bytes(vesselID, 'little')
+            _player = self.player
+            chunk_key = (_player.galaxy, _player.system)
+            chunk = self.control_server.shared.chunk_manager.loaded_chunks.get(chunk_key)
+            vessel = chunk.get_object_by_id(vessel_id)
+            control_bytes = await self.reader.readexactly(1)
+            control_key = int.from_bytes(control_bytes, 'little')
+            if(control_key == VesselControl.REQUEST_CONTROL):
+                print(f"🚀 Vessel Control Request for vessel {vessel_id} by player {_player.steamID}")
+                #If the vessel is free to be controlled, take control of it
+                if(vessel.controlled_by == 0):
+                    vessel.controlled_by = _player.steamID
+                    if(_player.controlled_vessel_id != -1):
+                        #Release control of that vessel
+                        old_vessel = chunk.get_object_by_id(_player.controlled_vessel_id)
+                        old_vessel.controlled_by = 0
+                    #Take control of the new vessel
+                    _player.controlled_vessel_id = vessel.object_id
+                    print(f"✅ Player {_player.steamID} gained control of vessel {vessel_id}")
+
+                #TCP RELAY
+                packet = bytearray()
+                packet += PacketType.VESSEL_CONTROL.to_bytes(2, 'little')  # Function code
+                packet += vessel_id.to_bytes(8, 'little')                     # Vessel ID
+                packet += self.steam_id.to_bytes(8, 'little')                  # Now controlled by
+                await self.control_server.broadcast(packet)
+
+            #Now check if the vessel is controlled by that player
+            else:
+                if(vessel.controlled_by == _player.steamID):
+                    vessel.do_control(control_key)
+                
+
+        
 
 
         else:

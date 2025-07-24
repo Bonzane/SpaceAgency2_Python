@@ -66,8 +66,11 @@ class ChunkManager:
             self.serialize_all_chunks()
 
     def serialize_all_chunks(self):
-        for chunk in self.loaded_chunks.values():
-            chunk.serialize_chunk()
+        pass
+        # TEMPORARILY DISABLED
+        # THIS WAS NOT THE ISSUE!!
+       # for chunk in self.loaded_chunks.values():
+       #     chunk.serialize_chunk()
 
     def how_many_chunks_loaded(self) -> int:
         return len(self.loaded_chunks)
