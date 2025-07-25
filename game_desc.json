@@ -6,7 +6,7 @@
             "id" : 1,
             "name" : "Earth Headquarters", 
             "cost" : 0, 
-            "build_time" : 5,
+            "build_time" : 2,
             "description" : "This building represents your agency's base on Earth. A great home base!",
             "upgrade_costs" : {
                 "2" : 50000,
@@ -17,7 +17,7 @@
                 "buildinglevel_unlocks" : {
                     "1" : {
                         "unlock_buildings" : [1, 2, 3],
-                        "unlock_components" : [1, 2, 3, 4, 5, 6, 7],
+                        "unlock_components" : [1, 2, 3, 4, 5, 6, 7, 8, 9],
                         "add_base_income" : 100
                     }, 
                     "2" : {
@@ -85,6 +85,18 @@
                     "y" : 128,
                     "snaps_accepted" : ["fuel-receive"], 
                     "snaps_provided" : ["fuel-give"]
+                }, 
+                {
+                    "x" : -64,
+                    "y" : -64,
+                    "snaps_accepted" : ["attachment-left-give"], 
+                    "snaps_provided" : ["attachment-left-receive"]
+                }, 
+                {
+                    "x" : 64,
+                    "y" : -64,
+                    "snaps_accepted" : ["attachment-right-give"], 
+                    "snaps_provided" : ["attachment-right-receive"]
                 }
             ]
 
@@ -163,7 +175,7 @@
             "cost" : 5,
             "mass" : 1,
             "attributes" : {
-                "forward-thrust" : 1, 
+                "forward-thrust" : 500, 
                 "reverse-thrust" : 1,
                 "forward-fuel-consumption" : 1, 
                 "reverse-fuel-consumption" : 1,
@@ -226,7 +238,57 @@
                     "snaps_provided" : ["fuel-receive"]
                 }
             ]
-        }                   
+        }  , 
+        {
+            "id" : 8,
+            "category" : "engine",
+            "name" : "Outboard Aux. Booster (L)", 
+            "cost" : 10000,
+            "mass" : 12,
+            "attributes" : {
+                "cw-thrust" : 1,
+                "cw-fuel-consumption" : 1,
+                "cw-fire-output-point" : [-48, 48], 
+                "cw-ignition-sound" : 4, 
+                "cw-thrust-sound" : 1,
+                "cw-fire-appearance" : 2, 
+                "cw-fire-angle-offset" : -45, 
+                "cw-thrust-direction" : -45
+            },
+            "snap_points" : [
+                {
+                    "x" : 0,
+                    "y" : 0,
+                    "snaps_accepted" : ["attachment-left-receive"],
+                    "snaps_provided" : ["attachment-left-give"]
+                }
+            ]
+        }  , 
+        {
+            "id" : 9,
+            "category" : "engine",
+            "name" : "Outboard Aux. Booster (R)", 
+            "cost" : 10000,
+            "mass" : 12,
+            "attributes" : {
+                "ccw-thrust" : 1,
+                "ccw-fuel-consumption" : 1,
+                "ccw-fire-output-point" : [48, 48], 
+                "ccw-ignition-sound" : 4, 
+                "ccw-thrust-sound" : 1,
+                "ccw-fire-appearance" : 2, 
+                "ccw-fire-angle-offset" : 45, 
+                "ccw-thrust-direction" : 45
+            },
+            "snap_points" : [
+                {
+                    "x" : 0,
+                    "y" : 0,
+                    "snaps_accepted" : ["attachment-right-receive"],
+                    "snaps_provided" : ["attachment-right-give"]
+                }
+            ]
+        }                     
     ]
         
 }

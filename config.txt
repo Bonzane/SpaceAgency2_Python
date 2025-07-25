@@ -2,7 +2,7 @@
 
 🚀          Lines that start with a rocket ship emoji 🚀 are IGNORED
 🚀          Information in this file is key-value pairs
-
+🚀           For settings related to components and specific bonuses, go to game_desc.json.
 
 
 🚀 -----------------------------------------
@@ -44,9 +44,11 @@ game_defaults.componentcostmultiplier 1.0
 game_defaults.buildingcostmultiplier 1.0
 game_defaults.upgradecostmultiplier 1.0
 game_defaults.baseincomemultiplier 1.0
-game_defaults.playerstartcash 200000
+game_defaults.playerstartcash 20000000
 game_defaults.basecashpersecond 100
 game_defaults.gamespeedmultiplier 1.0
 
 🚀 This is a boolean value. 0 = false 1 = true. 
 game_defaults.disableglobalchat 0
+
+
