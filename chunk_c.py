@@ -8,6 +8,7 @@ from physics import G
 from packet_types import DataGramPacketType
 import struct
 from session import Session
+from vessels import Vessel
 
 class Chunk:
     def __init__(self, galaxy: int, system: int, filepath: Union[str, Path], managed_by):
@@ -45,25 +46,52 @@ class Chunk:
         mass = np.array([obj.mass for obj in physics_objects])
         forces = np.zeros((n, 2))
 
+        # Tracking info for vessels
+        vessel_max_pull = {}
+
         # Compute gravitational forces
         for i in range(n):
             for j in range(i + 1, n):
-                diff = pos[j] - pos[i]
-                
-                # Clamp distance using the radius of object j (or i, or both — here we use j)
-                min_radius_m = getattr(physics_objects[j], 'radius_km', 10.0) * 1000
-                raw_dist_sq = np.dot(diff, diff)
-                clamped_dist_sq = max(raw_dist_sq, min_radius_m ** 2)
-                clamped_dist = math.sqrt(clamped_dist_sq)
+                obj_i = physics_objects[i]
+                obj_j = physics_objects[j]
 
-                # Compute force using clamped distance
-                force_mag = G * mass[i] * mass[j] / clamped_dist_sq
-                direction = diff / clamped_dist
+                diff = pos[j] - pos[i]
+                raw_dist_sq = np.dot(diff, diff)
+                raw_dist = math.sqrt(raw_dist_sq)
+
+                # Get radii of both objects (default to 0 if not defined)
+                radius_i = getattr(obj_i, "radius_km", 0)
+                radius_j = getattr(obj_j, "radius_km", 0)
+
+                # Apply gravity with softening
+                softening_km = 20  # KM
+                softened_dist_sq = raw_dist_sq + softening_km ** 2
+                softened_dist = math.sqrt(softened_dist_sq)
+
+                force_mag = G * mass[i] * mass[j] / softened_dist_sq
+                direction = diff / softened_dist
                 force = force_mag * direction
 
-                forces[i] += force
-                forces[j] -= force
+                # Only apply the force if neither object is within the other's radius
+                if raw_dist >= max(radius_i, radius_j):
+                    forces[i] += force
+                    forces[j] -= force
 
+                # Still track the strongest pull for vessels, regardless of radius
+                if isinstance(obj_i, Vessel):
+                    if obj_i.object_id not in vessel_max_pull or force_mag > vessel_max_pull[obj_i.object_id][1]:
+                        vessel_max_pull[obj_i.object_id] = (obj_j, force_mag)
+
+                if isinstance(obj_j, Vessel):
+                    if obj_j.object_id not in vessel_max_pull or force_mag > vessel_max_pull[obj_j.object_id][1]:
+                        vessel_max_pull[obj_j.object_id] = (obj_i, force_mag)
+
+
+        for vessel_id, (pulling_obj, strength) in vessel_max_pull.items():
+            vessel = self.id_to_object.get(vessel_id)
+            if vessel:
+                vessel.strongest_gravity_source = pulling_obj
+                vessel.strongest_gravity_force = strength
 
         # Call do_update() on all objects (physics and non-physics)
         chunkpacket = bytearray()
@@ -73,10 +101,24 @@ class Chunk:
         if(self.manager.shared.udp_server.objstream_seq > 65534):
             self.manager.shared.udp_server.objstream_seq = 0
         chunkpacket += struct.pack('<H', len(self.objects))
+        MAX_ACCEL = 1e3  # km/s² — adjust based on your physics scale
 
         for i, obj in enumerate(physics_objects):
             fx, fy = forces[i]
-            acc = (fx / obj.mass, fy / obj.mass)
+            if obj.mass <= 0:
+                continue  # Skip massless or broken objects
+
+            ax = fx / obj.mass
+            ay = fy / obj.mass
+            acc_mag = math.hypot(ax, ay)
+
+            # Clamp acceleration if needed
+            if acc_mag > MAX_ACCEL:
+                scale = MAX_ACCEL / acc_mag
+                ax *= scale
+                ay *= scale
+
+            acc = (ax, ay)
             obj.do_update(dt, acc)
 
         for obj in self.objects:
@@ -86,12 +128,12 @@ class Chunk:
             obj_x, obj_y = getattr(obj, "position", (0, 0))
             obj_vx, obj_vy = getattr(obj, "velocity", (0, 0))
             chunkpacket += struct.pack(
-                '<QQQQQf',
+                '<QQQfff',
                 obj.object_id,
                 self.signed_to_unsigned64(int(obj_x)),
                 self.signed_to_unsigned64(int(obj_y)),
-                self.signed_to_unsigned64(int(obj_vx)),
-                self.signed_to_unsigned64(int(obj_vy)),
+                float(obj_vx),
+                float(obj_vy),
                 obj.rotation
             )
 

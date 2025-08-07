@@ -2,7 +2,7 @@ import threading
 import time
 from pathlib import Path
 from typing import Dict, Tuple
-from chunk import Chunk 
+from chunk_c import Chunk 
 
 class ChunkManager:
     def __init__(self, shared, root_directory: Path, game, tickrate: int = 60):

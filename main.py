@@ -114,7 +114,7 @@ async def main():
     game_files = game_data.get("path", "gameData/default")
     #Create the game, it will automatically big bang if necessary
     tickrate = int(server_settings.get("tickrate", 60))
-    gamespeed = float(game_defaults.get("gamespeed_multiplier", 1.0) * 2920)
+    gamespeed = float(game_defaults.get("gamespeedmultiplier", 1.0)) * 1460
     missioncontrol.gamespeed = gamespeed
     missioncontrol.player_starting_cash = int(game_defaults.get("playerstartcash", 200000))
     missioncontrol.base_cash_per_second = int(game_defaults.get("basecashpersecond", 200))

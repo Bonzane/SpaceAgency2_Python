@@ -17,7 +17,7 @@
                 "buildinglevel_unlocks" : {
                     "1" : {
                         "unlock_buildings" : [1, 2, 3],
-                        "unlock_components" : [1, 2, 3, 4, 5, 6, 7, 8, 9],
+                        "unlock_components" : [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
                         "add_base_income" : 100
                     }, 
                     "2" : {
@@ -35,7 +35,7 @@
             "id" : 2,
             "name" : "Launchpad", 
             "cost" : 1000, 
-            "build_time" : 5,
+            "build_time" : 2,
             "upgrade_costs" : {},
             "description" : "Construct and launch vessels into space from this launchpad.",
             "attributes" : {
@@ -150,7 +150,7 @@
             "category" : "engine",
             "name" : "Standard Thruster", 
             "cost" : 20000,
-            "mass" : 100,
+            "mass" : 200,
             "attributes" : {
                 "forward-thrust" : 40, 
                 "forward-fuel-consumption" : 15, 
@@ -198,7 +198,7 @@
             "category" : "engine",
             "name" : "Eco Thruster", 
             "cost" : 25000,
-            "mass" : 105,
+            "mass" : 215,
             "attributes" : {
                 "forward-thrust" : 30,
                 "forward-fuel-consumption" : 11,
@@ -221,7 +221,7 @@
             "category" : "engine",
             "name" : "Flash Booster", 
             "cost" : 30000,
-            "mass" : 92,
+            "mass" : 192,
             "attributes" : {
                 "forward-thrust" : 60,
                 "forward-fuel-consumption" : 19,
@@ -238,7 +238,7 @@
                     "snaps_provided" : ["fuel-receive"]
                 }
             ]
-        }  , 
+        }, 
         {
             "id" : 8,
             "category" : "engine",
@@ -246,7 +246,7 @@
             "cost" : 10000,
             "mass" : 12,
             "attributes" : {
-                "cw-thrust" : 1,
+                "cw-thrust" : 2,
                 "cw-fuel-consumption" : 1,
                 "cw-fire-output-point" : [-48, 48], 
                 "cw-ignition-sound" : 4, 
@@ -271,7 +271,7 @@
             "cost" : 10000,
             "mass" : 12,
             "attributes" : {
-                "ccw-thrust" : 1,
+                "ccw-thrust" : 2,
                 "ccw-fuel-consumption" : 1,
                 "ccw-fire-output-point" : [48, 48], 
                 "ccw-ignition-sound" : 4, 
@@ -288,7 +288,36 @@
                     "snaps_provided" : ["attachment-right-give"]
                 }
             ]
-        }                     
+        }  , 
+        {
+            "id" : 10,
+            "category" : "engine",
+            "name" : "Reversible Thruster", 
+            "cost" : 40000,
+            "mass" : 240,
+            "attributes" : {
+                "forward-thrust" : 43,
+                "forward-fuel-consumption" : 15,
+                "forward-fire-output-point" : [0, 128], 
+                "forward-ignition-sound" : 1, 
+                "forward-thrust-sound" : 1,
+                "forward-fire-appearance" : 1,
+                "reverse-thrust" : 38,
+                "reverse-fuel-consumption" : 15,
+                "reverse-fire-output-point" : [0, 128], 
+                "reverse-ignition-sound" : 1, 
+                "reverse-thrust-sound" : 1,
+                "reverse-fire-appearance" : 3
+            },
+            "snap_points" : [
+                {
+                    "x" : 0,
+                    "y" : -128,
+                    "snaps_accepted" : ["fuel-give"],
+                    "snaps_provided" : ["fuel-receive"]
+                }
+            ]
+        }                    
     ]
         
 }

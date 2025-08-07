@@ -139,6 +139,8 @@ class Planet(PhysicsObject):
     orbits: Union["Planet", None] = None  # Reference to the object this body orbits
     orbit_radius: float = 0.0             # Optional: used for orbit correction
     orbit_direction: int = 1              # 1 = counterclockwise, -1 = clockwise
+    atmosphere_km: float = 10000
+    atmosphere_density: float = 1.0
 
     def do_update(self, dt: float, acc: Tuple[float, float]):
         if self.orbits:
@@ -184,7 +186,9 @@ class Sun(Planet):
             position=(0.0, 0.0),
             velocity=(0.0, 0.0),
             mass=1.989e30,
-            radius_km=695700.0  # Sun radius
+            radius_km=695700.0,
+            atmosphere_km=1_000_000.0,
+            atmosphere_density=1.0
         )
 
 class Earth(Planet):
@@ -194,7 +198,9 @@ class Earth(Planet):
             position=(152_000_000.0, 0.0),      #km
             velocity=(0.0, -29.78),             #km/s
             mass=5.972e24,                      #kg
-            radius_km=6371.0
+            radius_km=6371.0, 
+            atmosphere_km=10000.0,
+            atmosphere_density=1.0
         )
 
     def do_update(self, dt: float, acc: Tuple[float, float]):
@@ -236,7 +242,9 @@ class Luna(Planet):
             mass=moon_mass,
             orbits=earth,  # used only for rotation
             orbit_radius=moon_distance,
-            radius_km=1737.0
+            radius_km=1737.0, 
+            atmosphere_km=1000.0,
+            atmosphere_density=0.5
         )
 
     def do_update(self, dt: float, acc: Tuple[float, float]):
