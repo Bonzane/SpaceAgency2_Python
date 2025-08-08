@@ -246,7 +246,7 @@
             "cost" : 10000,
             "mass" : 12,
             "attributes" : {
-                "cw-thrust" : 2,
+                "cw-thrust" : 5,
                 "cw-fuel-consumption" : 1,
                 "cw-fire-output-point" : [-48, 48], 
                 "cw-ignition-sound" : 4, 
@@ -271,7 +271,7 @@
             "cost" : 10000,
             "mass" : 12,
             "attributes" : {
-                "ccw-thrust" : 2,
+                "ccw-thrust" : 5,
                 "ccw-fuel-consumption" : 1,
                 "ccw-fire-output-point" : [48, 48], 
                 "ccw-ignition-sound" : 4, 

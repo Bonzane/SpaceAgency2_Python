@@ -64,12 +64,20 @@ class Chunk:
                 radius_j = getattr(obj_j, "radius_km", 0)
 
                 # Apply gravity with softening
-                softening_km = 20  # KM
-                softened_dist_sq = raw_dist_sq + softening_km ** 2
-                softened_dist = math.sqrt(softened_dist_sq)
+                softening_km = 0.7 * max(radius_i, radius_j)  # KM
 
-                force_mag = G * mass[i] * mass[j] / softened_dist_sq
-                direction = diff / softened_dist
+                # Distance measured from surfaces (never negative)
+                sep_from_surfaces = max(0.0, raw_dist - (radius_i + radius_j))
+                # Add softening so max pull happens at surface contact
+                effective_sep = sep_from_surfaces + softening_km
+
+                # Guard direction (avoid div-by-zero when objects coincide)
+                if raw_dist > 0:
+                    direction = diff / raw_dist
+                else:
+                    direction = np.zeros(2, dtype=float)
+
+                force_mag = G * mass[i] * mass[j] / (effective_sep ** 2)
                 force = force_mag * direction
 
                 # Only apply the force if neither object is within the other's radius

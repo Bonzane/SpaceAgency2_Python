@@ -38,7 +38,7 @@ server_settings.trustkey 0
 🚀 -------------------------------------
 
 game_defaults.globalcashmultipler 1.0
-game_defaults.thrustmultiplier 1.0
+game_defaults.thrustmultiplier 0.5
 game_defaults.fuelmultiplier 1.0
 game_defaults.componentcostmultiplier 1.0
 game_defaults.buildingcostmultiplier 1.0

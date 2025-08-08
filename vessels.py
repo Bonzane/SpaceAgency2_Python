@@ -62,6 +62,8 @@ class Vessel(PhysicsObject):
     landed_angle_offset: float = 0.0
     strongest_gravity_force: float = 0.0
     strongest_gravity_source: Optional[GameObject] = None
+    altitude_delta: float = 0.0
+    last_forward_thrust_kN: float = 0.0
 
 
 
@@ -127,6 +129,7 @@ class Vessel(PhysicsObject):
 
     # Extended Physics
     def do_update(self, dt: float, acc: Tuple[float, float]):
+        self.last_forward_thrust_kN = 0.0
         # 1. Apply Thrust before physics updates
         if self.control_state.get(VesselState.FORWARD_THRUSTER_ON, False):
             self.apply_forward_thrust(dt)
@@ -153,8 +156,8 @@ class Vessel(PhysicsObject):
         # 2. Apply rotation
         self.rotation += self.rotation_velocity * dt
 
-        # 3. Always apply full physics — space mode
-        super().do_update(dt, acc)
+        if not self.landed:
+            super().do_update(dt, acc)
 
         # Clamp to speed of light
         vx, vy = self.velocity
@@ -180,6 +183,7 @@ class Vessel(PhysicsObject):
         if not isinstance(force, (int, float)) or math.isnan(force) or math.isinf(force):
             force = 0.0
         chunkpacket += struct.pack('<f', force)
+        chunkpacket += struct.pack('<B', self.landed)
 
 
         for player in self.shared.players.values():
@@ -188,7 +192,7 @@ class Vessel(PhysicsObject):
                 addr = (session.remote_ip, session.udp_port)
                 self.shared.udp_server.transport.sendto(chunkpacket, addr)
 
-        print(f"[DEBUG] Vessel {self.object_id} Velocity: vx={self.velocity[0]:.2f}, vy={self.velocity[1]:.2f}, Altitude: {self.altitude:.2f}")
+        #print(f"[DEBUG] Vessel {self.object_id} Velocity: vx={self.velocity[0]:.2f}, vy={self.velocity[1]:.2f}, Altitude: {self.altitude:.2f}")
 
 
 
@@ -206,33 +210,10 @@ class Vessel(PhysicsObject):
         #    self.velocity = (0.0, 0.0)
         #    self.rotation_velocity = 0.0
 
-
-        #3. Stream info to the players in the chunk
-        chunkpacket = bytearray()
-        chunkpacket.append(DataGramPacketType.VESSEL_STREAM)
-        chunkpacket += struct.pack('<Q', self.object_id)
-        chunkpacket += struct.pack('<B', int(self.control_state[VesselState.FORWARD_THRUSTER_ON]))
-        chunkpacket += struct.pack('<B', int(self.control_state[VesselState.REVERSE_THRUSTER_ON]))
-        chunkpacket += struct.pack('<B', int(self.control_state[VesselState.CCW_THRUST_ON]))
-        chunkpacket += struct.pack('<B', int(self.control_state[VesselState.CW_THRUST_ON]))  
-        chunkpacket += struct.pack('<f', self.altitude)
-        chunkpacket += struct.pack('Q', self.home_planet.object_id)
-        chunkpacket += struct.pack('<f', self.home_planet.atmosphere_km)
-
-        for player in self.shared.players.values():
-            session = player.session
-            if session and session.udp_port and session.alive:
-                addr = (session.remote_ip, session.udp_port)
-                self.shared.udp_server.transport.sendto(chunkpacket, addr)
-
-        print(f"[DEBUG] Vessel {self.object_id} Velocity: vx={self.velocity[0]:.2f}, vy={self.velocity[1]:.2f}, Altitude: {self.altitude:.2f}")
-
-
     def should_unland(self) -> bool:
-        # Launch if forward thrust is on, or if altitude is being forced up
-        vx, vy = self.velocity
-        speed = math.hypot(vx, vy)
-        return speed > 0.05 or self.control_state[VesselState.FORWARD_THRUSTER_ON]
+        if not self.control_state.get(VesselState.FORWARD_THRUSTER_ON, False):
+            return False
+        return True
 
     def should_land(self) -> bool:
         dx = self.position[0] - self.home_planet.position[0]
@@ -246,25 +227,23 @@ class Vessel(PhysicsObject):
         if self.landed or not self.home_planet:
             return
 
-        dx = self.position[0] - self.home_planet.position[0]
-        dy = self.position[1] - self.home_planet.position[1]
-        dist = math.hypot(dx, dy)
+        ALT_GAIN = 100.0
+        ALT_EXP  = 1.0
 
-        if dist == 0:
-            return
+        acc_proxy = self.last_forward_thrust_kN / max(self.mass, 1.0)
 
-        radial_dir = (dx / dist, dy / dist)
-        vx, vy = self.velocity
-        relative_vx = vx - self.home_planet.velocity[0]
-        relative_vy = vy - self.home_planet.velocity[1]
-        radial_speed = relative_vx * radial_dir[0] + relative_vy * radial_dir[1]
+        atm_height = max(1e-6, float(self.home_planet.atmosphere_km))
+        alt_norm   = max(0.0, min(1.0, self.altitude / atm_height))
+        BASE = 0.1  # 20% of full effect at ground
+        atmos_factor = BASE + (1.0 - BASE) * (alt_norm ** ALT_EXP)
 
-        # Update altitude based on radial movement
-        altitude_delta = radial_speed * dt * 5.0  # Adjust this factor for feel
-        self.altitude += altitude_delta
+        self.altitude_delta = ALT_GAIN * acc_proxy * atmos_factor
+        self.altitude = min(
+            self.altitude + self.altitude_delta * dt,
+            self.home_planet.atmosphere_km
+        )
 
-        # Clamp to atmosphere bounds
-        self.altitude = max(0.0, min(self.altitude, self.home_planet.atmosphere_km))
+
 
 
     def land(self):
@@ -302,8 +281,8 @@ class Vessel(PhysicsObject):
         angle_rad = math.radians(angle_deg)
 
         self.position = (
-            self.home_planet.position[0] + radius_km * math.cos(angle_rad),
-            self.home_planet.position[1] + radius_km * math.sin(angle_rad)
+            self.home_planet.position[0] + radius_km * math.cos(-angle_rad),
+            self.home_planet.position[1] + radius_km * math.sin(-angle_rad)
         )
         self.rotation = angle_deg
 
@@ -316,16 +295,25 @@ class Vessel(PhysicsObject):
 
 
     def apply_forward_thrust(self, dt: float):
+        total_kN = 0.0
+        mult = getattr(self.shared, "global_thrust_multiplier", 1.0)
+
         for component in self.components:
-            component_data = self.shared.component_data.get(component.id, {})
-            if not component_data:
+            cd = self.shared.component_data.get(component.id, {})
+            if not cd:
                 continue
 
-            thrust_kN = component_data.get("attributes", {}).get("forward-thrust", 0)
-            if thrust_kN > 0:
-                local_point = (component.x, component.y)
-                # Asset forward is -Y, world forward is +X, so compensate with -90°
-                self.apply_thrust_at(local_point, direction_angle_deg=-90, thrust_kN=thrust_kN, dt=dt)
+            kN = cd.get("attributes", {}).get("forward-thrust", 0.0)
+            if kN <= 0:
+                continue
+
+            total_kN += kN * mult  # accumulate effective forward thrust
+
+            local_point = (component.x, component.y)
+            self.apply_thrust_at(local_point, direction_angle_deg=-90, thrust_kN=kN, dt=dt)
+
+        self.last_forward_thrust_kN += total_kN
+
                 
 
 
@@ -370,11 +358,11 @@ class Vessel(PhysicsObject):
         if thrust_kN <= 0 or self.mass <= 0:
             return
         scaled_dt = dt / self.shared.gamespeed
-        thrust_N = thrust_kN * 1000
+        thrust = thrust_kN * 1000 * self.shared.global_thrust_multiplier
 
         angle_rad = math.radians(self.rotation + direction_angle_deg)
-        fx = thrust_N * math.cos(angle_rad)
-        fy = thrust_N * math.sin(angle_rad )
+        fx = thrust* math.cos(angle_rad)
+        fy = thrust * math.sin(angle_rad )
 
         dvx = (fx / self.mass) * scaled_dt
         dvy = (fy / self.mass) * scaled_dt
@@ -399,35 +387,6 @@ class Vessel(PhysicsObject):
             moment_of_inertia = self.mass * r_squared
             angular_acceleration = torque / moment_of_inertia
             self.rotation_velocity += math.degrees(angular_acceleration * scaled_dt)
-
-        if self.home_planet:
-            # Vector from planet center to vessel
-            dx = self.position[0] - self.home_planet.position[0]
-            dy = self.position[1] - self.home_planet.position[1]
-            dist = math.hypot(dx, dy)
-
-            if dist > 0:
-                radial_dir = (dx / dist, dy / dist)
-
-                # Thrust delta velocity this frame
-                dvx = fx / self.mass * scaled_dt
-                dvy = fy / self.mass * scaled_dt
-                thrust_mag = math.hypot(dvx, dvy)
-
-                if thrust_mag > 0:
-                    thrust_dir = (-dvx / thrust_mag, -dvy / thrust_mag)
-                    radial_push = thrust_dir[0] * radial_dir[0] + thrust_dir[1] * radial_dir[1]  # Dot product
-
-                    # Proportional altitude change
-                    ALTITUDE_SCALE = 10.0  # Adjust this for tuning km per (km/s outward)
-                    altitude_delta = radial_push * thrust_mag * ALTITUDE_SCALE
-                    self.altitude += altitude_delta
-
-            # Clamp to valid range
-            self.altitude = max(0.0, min(self.altitude, self.home_planet.atmosphere_km))
-
-
-
 
 
     def apply_thrust(self, dt: float, thrust_kN: float, angle_offset: float = 0.0):
@@ -497,7 +456,6 @@ def construct_vessel_from_request(shared, player, vessel_request_data) -> Vessel
     vessel.shared=shared
     vessel.name = vessel_name
     vessel.launchpad_planet_id = planet_id
-    vessel.launchpad_angle_offset = launchpad_angle
 
     # Add vessel to its agency
     agency = shared.agencies.get(player.agency_id)
@@ -511,6 +469,24 @@ def construct_vessel_from_request(shared, player, vessel_request_data) -> Vessel
     chunk = shared.chunk_manager.loaded_chunks.get(chunk_key)
     vessel.home_chunk = chunk
     vessel.home_planet = chunk.get_object_by_id(planet_id)
+    #--Initialize launchpad lock--
+    vessel.landed = True
+    vessel.altitude = 0.0
+    vessel.landed_angle_offset = float(launchpad_angle)
+    if vessel.home_planet:
+        R = float(vessel.home_planet.radius_km)
+        # world angle = planet rotation + pad's local angle
+        world_angle_deg = vessel.home_planet.rotation + vessel.landed_angle_offset
+        ang = math.radians(world_angle_deg)
+        cx, cy = vessel.home_planet.position
+
+        vessel.position = (cx + R * math.cos(ang), cy + R * math.sin(ang))
+        vessel.rotation = world_angle_deg              # face outward from the center
+        vessel.rotation_velocity = 0.0
+        vessel.velocity = vessel.home_planet.velocity  # move with the planet
+
+
+    # --- end launchpad lock init ---
     if chunk is not None:
         chunk.add_object(vessel)
         print(f"Vessel {vessel.object_id} added to chunk {chunk_key}")

@@ -92,6 +92,7 @@ class ServerMissionControl:
         self.udp_endpoint_to_session: Dict[Tuple[str, int], Session] = {}
         self.chunk_manager = None
         self.gamespeed = 2920
+        self.global_thrust_multiplier = 0.2
         self.player_starting_cash = int(200000)
         self.base_cash_per_second = 200
         self.game_description = None
