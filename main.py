@@ -98,6 +98,7 @@ async def main():
     missioncontrol.set_streaming_port_extern(int(server_settings.get("udp_streaming_port_external", 9001)))
     control_server = server.ControlServer(missioncontrol, control_port)
     control_server.activate()
+    missioncontrol.tcp_server = control_server
 
     # Start TCP server task
     tcp_task = asyncio.create_task(control_server.start())
@@ -120,6 +121,7 @@ async def main():
     missioncontrol.base_cash_per_second = int(game_defaults.get("basecashpersecond", 200))
     missioncontrol.server_global_cash_multiplier = float(game_defaults.get("globalcashmultipler", 1.0))
     missioncontrol.global_thrust_multiplier = float(game_defaults.get("thrustmultiplier", 0.2))
+    missioncontrol.tickrate = tickrate
     game = Game(game_files, tickrate, gamespeed, missioncontrol)
 
 

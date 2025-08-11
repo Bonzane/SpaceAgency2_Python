@@ -93,8 +93,17 @@ class Game:
         print("📍 Added Earth")
         luna = gameobjects.Luna(earth)
         print("📍 Added The Moon")
+        mercury = gameobjects.Mercury()
+        venus = gameobjects.Venus()
+        mars = gameobjects.Mars()
+        jupiter = gameobjects.Jupiter()
+        saturn = gameobjects.Saturn()
+        uranus = gameobjects.Uranus()
+        neptune = gameobjects.Neptune()
+        print("📍 Added Other planets")
+
         with open(chunk_path, "wb") as file:
-            pickle.dump([sun, earth, luna], file)
+            pickle.dump([sun, earth, luna, mercury, venus, mars, jupiter, saturn, uranus, neptune], file)
 
 
         print("✅ Created Home Chunk")

@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+import math
 from typing import Dict, List, Any
 import json
 import struct
@@ -29,6 +30,13 @@ class Agency:
         self.bases_to_buildings[2] = [default_building]
         self.bases_to_buildings[3] = []
         self.bases_to_buildings[1] = []
+        self.bases_to_buildings[4] = []
+        self.bases_to_buildings[5] = []
+        self.bases_to_buildings[6] = []
+        self.bases_to_buildings[7] = []
+        self.bases_to_buildings[8] = []
+        self.bases_to_buildings[9] = []
+        self.bases_to_buildings[10] = []
         self.attributes = copy.deepcopy(self.shared.agency_default_attributes)
 
 
@@ -92,6 +100,16 @@ class Agency:
             if id64 in self.shared.players
         )
         return self.total_money
+
+    #Distributes some amount of money to all agency members equally
+    def distribute_money(self, amount) -> int:
+        #Distribute the income to all members
+        if self.get_member_count() > 0:
+            income_per_member = math.ceil(amount / self.get_member_count())
+            for id64 in self.members:
+                if id64 in self.shared.players:
+                    self.shared.players[id64].money += income_per_member
+
     
 
     def generate_agency_income(self) -> None:

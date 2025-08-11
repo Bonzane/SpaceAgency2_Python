@@ -89,9 +89,11 @@ class ServerMissionControl:
         self.component_data = None
         self.next_available_agency_id = 5
         self.udp_server = None
+        self.tcp_server = None
         self.udp_endpoint_to_session: Dict[Tuple[str, int], Session] = {}
         self.chunk_manager = None
         self.gamespeed = 2920
+        self.tickrate = 60
         self.global_thrust_multiplier = 0.2
         self.player_starting_cash = int(200000)
         self.base_cash_per_second = 200
@@ -565,3 +567,6 @@ class StreamingServer:
             if hasattr(session, "udp_port") and session.udp_port:
                 addr = (session.remote_ip, session.udp_port)
                 self.transport.sendto(packet, addr)
+
+
+

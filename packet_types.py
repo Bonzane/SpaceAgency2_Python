@@ -32,6 +32,7 @@ class DataGramPacketType(IntEnum):
     OBJECT_INQUIRY = 0x04
     RESOLVE_VESSEL = 0x05
     VESSEL_STREAM = 0x06
+    REGION_CUE = 0x07
 
 
 class ChatMessage(IntEnum):

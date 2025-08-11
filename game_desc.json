@@ -49,14 +49,49 @@
             "upgrade_costs" : {},
             "description" : "The Network Tower can upgrade your agency's communication capabilities, making communication satellites more effective.",
             "attributes" : {
+                "buildinglevel_unlocks" : {
+                    "1" : {
+                        "add-sattelite-income" : 100
+                    }
+                }
             }
-        } 
+        },
+        {
+            "id" : 4,
+            "name" : "Storage Facility", 
+            "cost" : 50000, 
+            "build_time" : 60,
+            "upgrade_costs" : {},
+            "description" : "The Storage Facility allows the planet to hold more resources, which can be used to construct more advanced components.",
+            "attributes" : {
+                "buildinglevel_unlocks" : {
+                    "1" : {
+                        "add_base_storage" : 1000
+                    }
+                }
+            }
+        },
+        {
+            "id" : 5,
+            "name" : "Mining Rig", 
+            "cost" : 100000, 
+            "build_time" : 120,
+            "upgrade_costs" : {},
+            "description" : "The mining rig collects resources from the planet it is placed on.",
+            "attributes" : {
+                "buildinglevel_unlocks" : {
+                    "1" : {
+                        "add_mining_efficiency" : 100
+                    }
+                }
+            }
+        }    
 
 
     ],
     "planet_to_buildings"   :
     {
-        "Earth" : [1, 2, 3]
+        "Earth" : [1, 2, 3, 4, 5]
     }, 
 
     "agency_default_attributes" : {
@@ -133,7 +168,8 @@
             "cost" : 20000,
             "mass" : 100,
             "attributes" : {
-                "is-payload" : 1
+                "is-payload" : 1,
+                "payload-base-income" : 350
             }, 
             "snap_points" : [
                 {
@@ -175,14 +211,18 @@
             "cost" : 5,
             "mass" : 1,
             "attributes" : {
-                "forward-thrust" : 500, 
-                "reverse-thrust" : 1,
+                "forward-thrust" : 1000, 
+                "reverse-thrust" : 1000,
                 "forward-fuel-consumption" : 1, 
                 "reverse-fuel-consumption" : 1,
                 "forward-fire-output-point" : [0, 128], 
                 "forward-ignition-sound" : 1, 
                 "forward-thrust-sound" : 1,
-                "forward-fire-appearance" : 1
+                "forward-fire-appearance" : 1,
+                "reverse-fire-output-point" : [0, 128], 
+                "reverse-ignition-sound" : 1, 
+                "reverse-thrust-sound" : 1,
+                "reverse-fire-appearance" : 3
             },
             "snap_points" : [
                 {

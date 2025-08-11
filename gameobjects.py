@@ -2,10 +2,13 @@ from enum import Enum, IntEnum, auto
 import pickle
 from dataclasses import dataclass, field
 import itertools
-from typing import Tuple, Union
+from typing import Optional, Tuple, Union, Dict, List
 import numpy as np
 import math
 from physics import G
+import bisect
+from regions import Region
+from resources import Resource
 
 
 class ObjectType(IntEnum):
@@ -142,6 +145,30 @@ class Planet(PhysicsObject):
     atmosphere_km: float = 10000
     atmosphere_density: float = 1.0
 
+    regions_km: Dict[int, float] = field(default_factory=dict)
+    _region_edges: List[float] = field(default_factory=list, init=False, repr=False)
+    _region_ids:   List[int]   = field(default_factory=list, init=False, repr=False)
+
+    # Resource map. {Item: probability weight}
+    resource_map = Dict[int, float] = field(default_factory=dict, init=False, repr=False)
+
+    def set_regions(self, regions: Dict[int, float]) -> None:
+        self.regions_km = dict(regions)
+        items: List[Tuple[int, float]] = sorted(self.regions_km.items(), key=lambda kv: kv[1])  # small→large
+        self._region_ids   = [rid for rid, _ in items]
+        self._region_edges = [mx  for _,  mx in items]
+
+
+    def set_resources(self, resource_map: Dict[int, float]) -> None:
+        self.resource_map = dict(resource_map)
+
+
+    def check_in_region(self, distance_km: float) -> Optional[int]:
+        if not self._region_edges:
+            return None
+        i = bisect.bisect_left(self._region_edges, distance_km)
+        return self._region_ids[i] if i < len(self._region_ids) else None
+
     def do_update(self, dt: float, acc: Tuple[float, float]):
         if self.orbits:
             self.correct_orbit(dt)
@@ -199,9 +226,20 @@ class Earth(Planet):
             velocity=(0.0, -29.78),             #km/s
             mass=5.972e24,                      #kg
             radius_km=6371.0, 
-            atmosphere_km=10000.0,
+            atmosphere_km=10000.0,              #km*10
             atmosphere_density=1.0
         )
+        self.set_resources({
+            Resource.METAL: 50,
+            Resource.OIL: 30,
+            Resource.URANIUM: 5,
+            Resource.POLYMER: 5,
+            Resource.SILICON: 10,
+            Resource.WATER: 100,
+            Resource.GOLD: 2,
+            Resource.DIAMOND: 1
+
+        })
 
     def do_update(self, dt: float, acc: Tuple[float, float]):
         super().do_update(dt, acc)
@@ -215,6 +253,158 @@ class Earth(Planet):
         self.rotation += dt * degrees_per_second
 
         # Optional: wrap rotation between 0 and 360
+        self.rotation %= 360.0
+
+class Mars(Planet):
+    def __init__(self):
+        super().__init__(
+            object_type=ObjectType.MARS,
+            position=(0.0, 241_520_000.0),      #km
+            velocity=(24.1, 0.0),             #km/s
+            mass=6.41693e23,                      #kg
+            radius_km = 3389.5, 
+            atmosphere_km=8000.0,              #km*10
+            atmosphere_density=0.6
+        )
+        self.set_regions({
+            Region.MARS_CLOSE: 30_000,
+            Region.MARS_NEAR: 300_000,
+            Region.MARS_DISTANT: 1_000_000
+        })
+
+
+    def do_update(self, dt: float, acc: Tuple[float, float]):
+        super().do_update(dt, acc)
+        degrees_per_second = 360.0 / 88642.0  # degrees per second degrees / seconds in day)
+        self.rotation += dt * degrees_per_second
+        self.rotation %= 360.0
+
+class Venus(Planet):
+    def __init__(self):
+        super().__init__(
+            object_type=ObjectType.VENUS,
+            position=(-67_225_000, 0.0),      #km
+            velocity=(0.0, 35.02),             #km/s
+            mass=4.867e24,                      #kg
+            radius_km = 3389.5, 
+            atmosphere_km=10000.0,              #km*10
+            atmosphere_density=2.0
+        )
+
+    def do_update(self, dt: float, acc: Tuple[float, float]):
+        super().do_update(dt, acc)
+        degrees_per_second = 360.0 / 20_995_200.0  # degrees per second degrees / seconds in day)
+        self.rotation += dt * degrees_per_second
+        self.rotation %= 360.0
+
+class Mercury(Planet):
+    def __init__(self):
+        super().__init__(
+            object_type=ObjectType.MERCURY,
+            position=(0.0, -35_863_000),      #km
+            velocity=(-47.36, 0.0),             #km/s
+            mass=3.285e23,                      #kg
+            radius_km = 2439.7, 
+            atmosphere_km=5000.0,              #km*10
+            atmosphere_density=0.5
+        )
+
+    def do_update(self, dt: float, acc: Tuple[float, float]):
+        super().do_update(dt, acc)
+        degrees_per_second = 360.0 / 15_181_440.0  # degrees per second degrees / seconds in day)
+        self.rotation += dt * degrees_per_second
+        self.rotation %= 360.0   
+
+class Jupiter(Planet):
+    def __init__(self):
+        super().__init__(
+            object_type=ObjectType.JUPITER,
+            position=(778_000_000.0, 0.0),      #km
+            velocity=(0.0, -13.07),             #km/s
+            mass=1.898e27,                      #kg
+            radius_km = 69911.0, 
+            atmosphere_km=20000.0,              #km*10
+            atmosphere_density=2.0
+        )
+        self.set_regions({
+            Region.JUPITER_CLOSE: 1_000_000,
+            Region.JUPITER_NEAR: 30_000_000,
+            Region.JUPITER_DISTANT: 300_000_000
+        })
+
+    def do_update(self, dt: float, acc: Tuple[float, float]):
+        super().do_update(dt, acc)
+        degrees_per_second = 360.0 / 35_430.0  # degrees per second degrees / seconds in day)
+        self.rotation += dt * degrees_per_second
+        self.rotation %= 360.0   
+
+class Saturn(Planet):
+    def __init__(self):
+        super().__init__(
+            object_type=ObjectType.SATURN,
+            position=(0.0, -888_650_000),      #km
+            velocity=(-9.69, 0.0),             #km/s
+            mass=5.685e26,                      #kg
+            radius_km = 58232.0, 
+            atmosphere_km=15000.0,              #km*10
+            atmosphere_density=1.5
+        )
+        self.set_regions({
+            Region.SATURN_CLOSE: 1_000_000,
+            Region.SATURN_NEAR: 40_000_000,
+            Region.SATURN_DISTANT: 400_000_000
+        })
+
+    def do_update(self, dt: float, acc: Tuple[float, float]):
+        super().do_update(dt, acc)
+        degrees_per_second = 360.0 / 37_988.0  # degrees per second degrees / seconds in day)
+        self.rotation += dt * degrees_per_second
+        self.rotation %= 360.0   
+
+class Uranus(Planet):
+    def __init__(self):
+        super().__init__(
+            object_type=ObjectType.URANUS,
+            position=(-2_918_400_000.0, 0.0),      #km
+            velocity=(0.0, 6.8),             #km/s
+            mass = 8.681e25,                      #kg
+            radius_km = 25362.0, 
+            atmosphere_km=12000.0,              #km*10
+            atmosphere_density=1.5
+        )
+        self.set_regions({
+            Region.URANUS_CLOSE: 5_000_000,
+            Region.URANUS_NEAR: 80_000_000,
+            Region.URANUS_DISTANT: 800_000_000
+        })
+
+    def do_update(self, dt: float, acc: Tuple[float, float]):
+        super().do_update(dt, acc)
+        degrees_per_second = 360.0 / 62_092.0  # degrees per second degrees / seconds in day)
+        self.rotation -= dt * degrees_per_second
+        self.rotation %= 360.0
+
+class Neptune(Planet):
+    def __init__(self):
+        super().__init__(
+            object_type=ObjectType.NEPTUNE,
+            position=(0.0, 4_470_800_000.0),      #km
+            velocity=(5.45, 0.0),             #km/s
+            mass = 1.0241e26,                      #kg
+            radius_km = 24622.0, 
+            atmosphere_km=11000.0,              #km*10
+            atmosphere_density=1.4
+        )
+        self.set_regions({
+            Region.NEPTUNE_CLOSE: 2_000_000,
+            Region.NEPTUNE_NEAR: 100_000_000,
+            Region.NEPTUNE_DISTANT: 1_000_000_000
+        })
+
+    def do_update(self, dt: float, acc: Tuple[float, float]):
+        super().do_update(dt, acc)
+        degrees_per_second = 360.0 / 57_996.0  # degrees per second degrees / seconds in day)
+        self.rotation += dt * degrees_per_second
         self.rotation %= 360.0
 
 class Luna(Planet):
@@ -246,6 +436,9 @@ class Luna(Planet):
             atmosphere_km=1000.0,
             atmosphere_density=0.5
         )
+        self.set_regions({
+            Region.MOON_NEAR: 50_000
+        })
 
     def do_update(self, dt: float, acc: Tuple[float, float]):
         # Skip orbit correction and apply real physics

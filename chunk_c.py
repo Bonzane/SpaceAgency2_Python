@@ -9,6 +9,11 @@ from packet_types import DataGramPacketType
 import struct
 from session import Session
 from vessels import Vessel
+from regions import maybe_update_vessel_region
+
+
+def is_planet(o):
+    return hasattr(o, "check_in_region") or hasattr(o, "check_in_region_sq")
 
 class Chunk:
     def __init__(self, galaxy: int, system: int, filepath: Union[str, Path], managed_by):
@@ -58,6 +63,18 @@ class Chunk:
                 diff = pos[j] - pos[i]
                 raw_dist_sq = np.dot(diff, diff)
                 raw_dist = math.sqrt(raw_dist_sq)
+
+
+                # Case: i is vessel, j is planet
+                if isinstance(obj_i, Vessel) and is_planet(obj_j):
+                    new_region = obj_j.check_in_region(raw_dist)
+                    maybe_update_vessel_region(self.manager.shared, obj_i, obj_j, new_region)
+
+                # Case: j is vessel, i is planet
+                if isinstance(obj_j, Vessel) and is_planet(obj_i):
+                    new_region = obj_i.check_in_region(raw_dist)
+                    maybe_update_vessel_region(self.manager.shared, obj_j, obj_i, new_region)
+
 
                 # Get radii of both objects (default to 0 if not defined)
                 radius_i = getattr(obj_i, "radius_km", 0)

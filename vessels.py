@@ -6,6 +6,7 @@ from gameobjects import PhysicsObject, GameObject, ObjectType
 from enum import Enum, IntEnum
 import math
 from packet_types import DataGramPacketType
+from vessel_components import Components
 
 class VesselControl(IntEnum):
     FORWARD_THRUST_ENGAGE = 0x00
@@ -17,6 +18,8 @@ class VesselControl(IntEnum):
     CW_THRUST_ENGAGE = 0x06
     CW_THRUST_DISENGAGE = 0x07
     REQUEST_CONTROL = 0x08
+    DETACH_STAGE = 0x09
+
 
 class VesselState(IntEnum):
     FORWARD_THRUSTER_ON = 0x00
@@ -39,6 +42,7 @@ class Vessel(PhysicsObject):
     shared: Any = field(default=None, repr=False, init=False)
     name : str = "Unnamed Vessel"
     mass : float = 0.0
+    dry_mass : float = 0.0
     liquid_fuel_kg: float = 0.0
     liquid_fuel_capacity_kg: float = 0.0
     capable_forward_thrust: float = 0.0
@@ -64,6 +68,11 @@ class Vessel(PhysicsObject):
     strongest_gravity_source: Optional[GameObject] = None
     altitude_delta: float = 0.0
     last_forward_thrust_kN: float = 0.0
+    regions_already_visited: List[int] = field(default_factory=list)
+    region: int = 0  # Region ID for the vessel, used for proximity cues
+    stage: int = 0
+    payload: int = 0
+    lifetime_revenue: int = 0
 
 
 
@@ -75,6 +84,9 @@ class Vessel(PhysicsObject):
         #calculate initial states
         component_data_lookup = self.shared.component_data
         total_mass = 0.0
+        self.dry_mass = 0.0
+        self.liquid_fuel_capacity_kg = 0.0
+        self.liquid_fuel_kg = 0.0
         weighted_x = 0.0
         weighted_y = 0.0
         for component in self.components:
@@ -127,22 +139,38 @@ class Vessel(PhysicsObject):
             case VesselControl.CW_THRUST_DISENGAGE:
                 self.control_state[VesselState.CW_THRUST_ON] = False
 
+
+    def do_payload_mechanics(self, dt: float):
+        _payload_data = self.shared.component_data.get(self.payload, {})
+        _payload_attributes = _payload_data.get("attributes", {})
+        _payload_income_per_second = _payload_attributes.get("payload-base-income", 0)
+        _agency = self.shared.agencies.get(self.agency_id)
+        _tickrate = self.shared.tickrate
+        # Make sure it's deployed
+        if not self.stage == 0:
+            return
+        
+        match self.payload:
+            case Components.COMMUNICATIONS_SATELLITE:
+                pass
+
+        #Give income to the agency
+        _agency.distribute_money(_payload_income_per_second / _tickrate)
+
+
+
     # Extended Physics
     def do_update(self, dt: float, acc: Tuple[float, float]):
         self.last_forward_thrust_kN = 0.0
         # 1. Apply Thrust before physics updates
         if self.control_state.get(VesselState.FORWARD_THRUSTER_ON, False):
             self.apply_forward_thrust(dt)
-            print("thrusting forward")
         if self.control_state.get(VesselState.CCW_THRUST_ON, False):
             self.apply_ccw_thrust(dt)
-            print("thrusting ccw")
         if self.control_state.get(VesselState.CW_THRUST_ON, False):
             self.apply_cw_thrust(dt)
-            print("thrusting cw")
         if self.control_state.get(VesselState.REVERSE_THRUSTER_ON, False):
             self.apply_reverse_thrust(dt)
-            print("thrusting reverse")
 
         # Check transition condition: should we launch?
         if self.landed:
@@ -159,7 +187,12 @@ class Vessel(PhysicsObject):
         if not self.landed:
             super().do_update(dt, acc)
 
-        # Clamp to speed of light
+            self.ground_influence(dt)
+
+        #3 - Do Payload Mechanics
+        self.do_payload_mechanics(dt)
+
+        # Clamp to speed of light (FOR NOW!)
         vx, vy = self.velocity
         speed = math.hypot(vx, vy)
         C_KM_S = 299_792.458
@@ -242,6 +275,62 @@ class Vessel(PhysicsObject):
             self.altitude + self.altitude_delta * dt,
             self.home_planet.atmosphere_km
         )
+            
+    def _clamp01(self, x: float) -> float:
+        return 0.0 if x < 0.0 else (1.0 if x > 1.0 else x)
+
+    def _smoothstep(self, a: float, b: float, x: float) -> float:
+        # 0 at x<=a, 1 at x>=b, C1 continuous in between
+        if a == b:
+            return 1.0 if x >= b else 0.0
+        t = self._clamp01((x - a) / (b - a))
+        return t * t * (3 - 2 * t)
+
+    def ground_influence(self, dt: float):
+        if not self.home_planet or dt <= 0.0:
+            return
+
+        atm = max(1e-6, float(self.home_planet.atmosphere_km))
+        n = self._clamp01(self.altitude / atm)  # 0..1
+
+        # --- Velocity matching ---
+        VEL_TAU_GROUND = 0.15
+        VEL_TAU_TOP    = 8.0
+        VEL_SHAPE      = 0.8
+        tau_v = VEL_TAU_GROUND + (VEL_TAU_TOP - VEL_TAU_GROUND) * (n ** VEL_SHAPE)
+
+        # Fade velocity lock to ZERO near the top of the atmosphere.
+        # Below ~90% it's fully active; between 90%..100% it eases out to 0.
+        VEL_OFF_START = 0.90
+        vel_gate = 1.0 - self._smoothstep(VEL_OFF_START, 1.0, n)  # 1→0 as n goes 0.90→1.0
+
+        if vel_gate > 0.0:
+            beta = (1.0 - math.exp(-dt / tau_v)) * vel_gate * 0.1  # dt-safe blend, then gated
+            pvx, pvy = self.home_planet.velocity
+            vx, vy   = self.velocity
+            self.velocity = (vx + (pvx - vx) * beta, vy + (pvy - vy) * beta)
+
+        # --- Position glue (unchanged idea; only low altitude) ---
+        POS_FADE_END = 0.35
+        pos_gate = self._smoothstep(0.0, POS_FADE_END, max(0.0, 1.0 - n))  # 1→0 as n goes 0→0.35
+
+        if pos_gate > 0.0:
+            POS_TAU_GROUND = 0.10
+            POS_TAU_END    = 1.50
+            POS_SHAPE      = 1.0
+            tau_p = POS_TAU_GROUND + (POS_TAU_END - POS_TAU_GROUND) * (n ** POS_SHAPE)
+            alpha = (1.0 - math.exp(-dt / tau_p)) * pos_gate * 0.1
+
+            R = float(self.home_planet.radius_km)
+            ang_deg = self.landed_angle_offset + self.home_planet.rotation
+            ang = math.radians(ang_deg)
+            px, py = self.home_planet.position
+            tx = px + R * math.cos(-ang)
+            ty = py + R * math.sin(-ang)
+
+            x, y = self.position
+            self.position = (x + (tx - x) * alpha, y + (ty - y) * alpha)
+
 
 
 
@@ -424,7 +513,10 @@ def construct_vessel_from_request(shared, player, vessel_request_data) -> Vessel
     launchpad_building_type= launchpad_data.get("type", 2)
     launchpad_angle = launchpad_data.get("position_angle", 0)
     vessel_name = vessel_request_data.get("name", "Unnamed Vessel")
+    highest_stage = 0
 
+
+    #TODO: CALCULATE THE STAGE OF EACH COMPONENT TOO
     for component in vessel_request_data["vessel_data"]:
         comp_id = int(component["id"])
         placement_x = int(component["x"]) - 2500
