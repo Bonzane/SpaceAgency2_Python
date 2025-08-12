@@ -20,7 +20,6 @@ class VesselControl(IntEnum):
     REQUEST_CONTROL = 0x08
     DETACH_STAGE = 0x09
 
-
 class VesselState(IntEnum):
     FORWARD_THRUSTER_ON = 0x00
     REVERSE_THRUSTER_ON = 0x01
@@ -143,7 +142,7 @@ class Vessel(PhysicsObject):
     def do_payload_mechanics(self, dt: float):
         _payload_data = self.shared.component_data.get(self.payload, {})
         _payload_attributes = _payload_data.get("attributes", {})
-        _payload_income_per_second = _payload_attributes.get("payload-base-income", 0)
+        _payload_income_per_second = _payload_attributes.get("payload_base_income", 0)
         _agency = self.shared.agencies.get(self.agency_id)
         _tickrate = self.shared.tickrate
         # Make sure it's deployed
@@ -152,7 +151,7 @@ class Vessel(PhysicsObject):
         
         match self.payload:
             case Components.COMMUNICATIONS_SATELLITE:
-                pass
+                _payload_income_per_second += _agency.attributes.get("satellite_bonus_income", 0)
 
         #Give income to the agency
         _agency.distribute_money(_payload_income_per_second / _tickrate)
@@ -217,7 +216,8 @@ class Vessel(PhysicsObject):
             force = 0.0
         chunkpacket += struct.pack('<f', force)
         chunkpacket += struct.pack('<B', self.landed)
-
+        chunkpacket += struct.pack('<f', self.liquid_fuel_kg)
+        chunkpacket += struct.pack('<f', self.liquid_fuel_capacity_kg)
 
         for player in self.shared.players.values():
             session = player.session
@@ -396,6 +396,15 @@ class Vessel(PhysicsObject):
             if kN <= 0:
                 continue
 
+            fuelConsumption = cd.get("attributes", {}).get("forward-fuel-consumption", 0.0) * 0.003
+            if fuelConsumption > 0.0:
+                fuel_needed = fuelConsumption * dt
+                if self.liquid_fuel_kg >= fuel_needed:
+                    self.liquid_fuel_kg -= fuel_needed
+                else:
+                    kN = 0.0
+                    self.control_state[VesselState.FORWARD_THRUSTER_ON] = False
+
             total_kN += kN * mult  # accumulate effective forward thrust
 
             local_point = (component.x, component.y)
@@ -413,6 +422,16 @@ class Vessel(PhysicsObject):
                 continue
             thrust_kN = component_data.get("attributes", {}).get("ccw-thrust", 0) * 0.1
             thrust_direction = component_data.get("attributes", {}).get("ccw-thrust-direction", 0) 
+
+            fuelConsumption = component_data.get("attributes", {}).get("ccw-fuel-consumption", 0.0) * 0.003
+            if fuelConsumption > 0.0:
+                fuel_needed = fuelConsumption * dt
+                if self.liquid_fuel_kg >= fuel_needed:
+                    self.liquid_fuel_kg -= fuel_needed
+                else:
+                    thrust_kN = 0.0
+                    self.control_state[VesselState.CCW_THRUST_ON] = False
+
             if thrust_kN > 0:
                 local_point = (component.x, component.y)
                 # Asset forward is -Y, world forward is +X, so compensate with -90°
@@ -425,6 +444,16 @@ class Vessel(PhysicsObject):
                 continue
             thrust_kN = component_data.get("attributes", {}).get("cw-thrust", 0) * 0.1
             thrust_direction = component_data.get("attributes", {}).get("cw-thrust-direction", 0)
+
+            fuelConsumption = component_data.get("attributes", {}).get("cw-fuel-consumption", 0.0) * 0.003
+            if fuelConsumption > 0.0:
+                fuel_needed = fuelConsumption * dt
+                if self.liquid_fuel_kg >= fuel_needed:
+                    self.liquid_fuel_kg -= fuel_needed
+                else:
+                    thrust_kN = 0.0
+                    self.control_state[VesselState.CW_THRUST_ON] = False
+
             if thrust_kN > 0:
                 local_point = (component.x, component.y)
                 # Asset forward is -Y, world forward is +X, so compensate with -90°
@@ -437,6 +466,16 @@ class Vessel(PhysicsObject):
                 continue
             thrust_kN = component_data.get("attributes", {}).get("reverse-thrust", 0)
             thrust_direction = component_data.get("attributes", {}).get("reverse-thrust-direction", 0) + 180
+
+            fuelConsumption = component_data.get("attributes", {}).get("reverse-fuel-consumption", 0.0) * 0.003
+            if fuelConsumption > 0.0:
+                fuel_needed = fuelConsumption * dt
+                if self.liquid_fuel_kg >= fuel_needed:
+                    self.liquid_fuel_kg -= fuel_needed
+                else:
+                    thrust_kN = 0.0
+                    self.control_state[VesselState.REVERSE_THRUSTER_ON] = False
+
             if thrust_kN > 0:
                 local_point = (component.x, component.y)
                 # Asset forward is -Y, world forward is +X, so compensate with -90°

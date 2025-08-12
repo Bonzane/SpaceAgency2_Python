@@ -185,6 +185,8 @@ class ControlServer:
                 #Update Buildings and their build time
                 for _building in _agency.get_all_buildings():
                     _building.update()
+                #Update agency attributes
+                _agency.update_attributes()
 
 
             #Send the agency gamestates

@@ -44,7 +44,7 @@ game_defaults.componentcostmultiplier 1.0
 game_defaults.buildingcostmultiplier 1.0
 game_defaults.upgradecostmultiplier 1.0
 game_defaults.baseincomemultiplier 1.0
-game_defaults.playerstartcash 20000000
+game_defaults.playerstartcash 2000000000
 game_defaults.basecashpersecond 100
 game_defaults.gamespeedmultiplier 0.5
 

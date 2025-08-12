@@ -150,7 +150,7 @@ class Planet(PhysicsObject):
     _region_ids:   List[int]   = field(default_factory=list, init=False, repr=False)
 
     # Resource map. {Item: probability weight}
-    resource_map = Dict[int, float] = field(default_factory=dict, init=False, repr=False)
+    resource_map: Dict[int, float] = field(default_factory=dict, init=False, repr=False)
 
     def set_regions(self, regions: Dict[int, float]) -> None:
         self.regions_km = dict(regions)

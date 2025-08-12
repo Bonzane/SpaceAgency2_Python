@@ -23,7 +23,6 @@ class Agency:
     unlocked_components: set = field(default_factory=set)
     vessels: List[Vessel] = field(default_factory=list)
     income_per_second: int = 0
-    
 
     def __post_init__(self):
         default_building = Building(BuildingType.EARTH_HQ, self.shared, 7)
@@ -88,6 +87,36 @@ class Agency:
 
     def get_all_vessels(self) -> List[Vessel]:
         return self.vessels
+    
+    # === Attributes ===
+    def update_attributes(self) -> None:
+        # 1) start from defaults
+        attrs = dict(self.shared.agency_default_attributes)
+
+        # 2) fold in effects from each constructed building, up to its level
+        for b in self.get_all_buildings():
+            if not getattr(b, "constructed", False):
+                continue
+            unlocks = getattr(b, "unlocks", {}) or {}
+
+            for lvl_str, effects in unlocks.items():
+                try:
+                    lvl_req = int(lvl_str)
+                except ValueError:
+                    continue
+
+                if b.level < lvl_req:
+                    continue
+                if not isinstance(effects, dict):
+                    continue
+
+                if "add_satellite_income" in effects:
+                    attrs["satellite_bonus_income"] = attrs.get("satellite_bonus_income", 0) + effects["add_satellite_income"]
+
+
+        # 3) commit
+        self.attributes = attrs
+
 
 
     # === Money / Data ===
