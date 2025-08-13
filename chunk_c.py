@@ -10,10 +10,13 @@ import struct
 from session import Session
 from vessels import Vessel
 from regions import maybe_update_vessel_region
+from utils import ambient_temp_simple
 
 
 def is_planet(o):
     return hasattr(o, "check_in_region") or hasattr(o, "check_in_region_sq")
+
+
 
 class Chunk:
     def __init__(self, galaxy: int, system: int, filepath: Union[str, Path], managed_by):
@@ -81,7 +84,7 @@ class Chunk:
                 radius_j = getattr(obj_j, "radius_km", 0)
 
                 # Apply gravity with softening
-                softening_km = 0.7 * max(radius_i, radius_j)  # KM
+                softening_km = 0.8 * max(radius_i, radius_j)  # KM
 
                 # Distance measured from surfaces (never negative)
                 sep_from_surfaces = max(0.0, raw_dist - (radius_i + radius_j))
@@ -98,7 +101,7 @@ class Chunk:
                 force = force_mag * direction
 
                 # Only apply the force if neither object is within the other's radius
-                if raw_dist >= max(radius_i, radius_j):
+                if raw_dist >= max(radius_i, radius_j) * 1.15:
                     forces[i] += force
                     forces[j] -= force
 
@@ -117,6 +120,29 @@ class Chunk:
             if vessel:
                 vessel.strongest_gravity_source = pulling_obj
                 vessel.strongest_gravity_force = strength
+
+        for obj in physics_objects:
+            ox, oy = getattr(obj, "position", (0.0, 0.0))
+            dist_km = math.hypot(ox, oy)  # distance to (0, 0)
+            space_temp = ambient_temp_simple(dist_km)
+
+            if isinstance(obj, Vessel) and obj.home_planet:
+                # Distance from vessel to planet center
+                px, py = obj.home_planet.position
+                vessel_dist = math.hypot(ox - px, oy - py)
+                alt_km = obj.altitude
+
+                # If inside atmosphere, interpolate temp
+                atm_height = obj.home_planet.atmosphere_km
+                if alt_km <= atm_height:
+                    surface_temp = getattr(obj.home_planet, "surface_temp", 288.15)  # K
+                    t = max(0.0, min(1.0, alt_km / atm_height))  # 0 = ground, 1 = edge of atm
+                    obj.ambient_temp_K = surface_temp * (1 - t) + space_temp * t
+                    continue  # skip setting space temp
+
+            # default: space ambient
+            obj.ambient_temp_K = space_temp
+
 
         # Call do_update() on all objects (physics and non-physics)
         chunkpacket = bytearray()

@@ -196,12 +196,13 @@
             "cost" : 20000,
             "mass" : 200,
             "attributes" : {
-                "forward-thrust" : 40, 
+                "forward-thrust" : 38, 
                 "forward-fuel-consumption" : 15, 
                 "forward-fire-output-point" : [0, 118], 
                 "forward-ignition-sound" : 1, 
                 "forward-thrust-sound" : 1,
-                "forward-fire-appearance" : 1
+                "forward-fire-appearance" : 1, 
+                "forward-fire-heat" : 1.0
             },
             "snap_points" : [
                 {
@@ -227,10 +228,12 @@
                 "forward-ignition-sound" : 1, 
                 "forward-thrust-sound" : 1,
                 "forward-fire-appearance" : 1,
+                "forward-fire-heat" : 0.1,
                 "reverse-fire-output-point" : [0, 128], 
                 "reverse-ignition-sound" : 1, 
                 "reverse-thrust-sound" : 1,
-                "reverse-fire-appearance" : 3
+                "reverse-fire-appearance" : 3,
+                "reverse-fire-heat" : 0.1
             },
             "snap_points" : [
                 {
@@ -253,7 +256,8 @@
                 "forward-fire-output-point" : [0, 128], 
                 "forward-ignition-sound" : 2, 
                 "forward-thrust-sound" : 2,
-                "forward-fire-appearance" : 1
+                "forward-fire-appearance" : 1,
+                "forward-fire-heat" : 0.8
             },
             "snap_points" : [
                 {
@@ -276,7 +280,8 @@
                 "forward-fire-output-point" : [0, 128], 
                 "forward-ignition-sound" : 3, 
                 "forward-thrust-sound" : 1,
-                "forward-fire-appearance" : 1
+                "forward-fire-appearance" : 1,
+                "forward-fire-heat" : 1.1
             },
             "snap_points" : [
                 {
@@ -301,7 +306,8 @@
                 "cw-thrust-sound" : 1,
                 "cw-fire-appearance" : 2, 
                 "cw-fire-angle-offset" : -45, 
-                "cw-thrust-direction" : -45
+                "cw-thrust-direction" : -45,
+                "cw-fire-heat" : 0.1
             },
             "snap_points" : [
                 {
@@ -326,7 +332,8 @@
                 "ccw-thrust-sound" : 1,
                 "ccw-fire-appearance" : 2, 
                 "ccw-fire-angle-offset" : 45, 
-                "ccw-thrust-direction" : 45
+                "ccw-thrust-direction" : 45,
+                "ccw-fire-heat" : 0.1
             },
             "snap_points" : [
                 {
@@ -355,7 +362,9 @@
                 "reverse-fire-output-point" : [0, 128], 
                 "reverse-ignition-sound" : 1, 
                 "reverse-thrust-sound" : 1,
-                "reverse-fire-appearance" : 3
+                "reverse-fire-appearance" : 3,
+                "forward-fire-heat" : 1.0,
+                "reverse-fire-heat" : 2.0
             },
             "snap_points" : [
                 {

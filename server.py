@@ -544,7 +544,9 @@ class StreamingServer:
         name = vessel.name
         packet += name.encode('utf-8') + b'\x00'
         components = vessel.components
+        packet += struct.pack('<H', vessel.num_stages)
         packet += struct.pack('<H', len(components))
+
         for comp in components:
             packet += struct.pack('<Hhh', comp.id, comp.x, comp.y)
         return packet   

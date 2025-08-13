@@ -24,3 +24,10 @@ def send_audio_cue_to_controller(shared, vessel, region_id: int) -> bool:
     addr = (session.remote_ip, session.udp_port)
     shared.udp_server.transport.sendto(pkt, addr)
     return True
+
+def ambient_temp_simple(distance_km: float) -> float:
+    base_temp = 2.7  # K
+    scale_distance = 1_000_000  # 1 million km
+    heat_at_1Mkm = 3_300  # tuned so Mercury ~ 440K
+    dist_units = max(distance_km / scale_distance, 1.0)
+    return base_temp + heat_at_1Mkm / (dist_units ** 0.5)

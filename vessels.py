@@ -7,6 +7,7 @@ from enum import Enum, IntEnum
 import math
 from packet_types import DataGramPacketType
 from vessel_components import Components
+from utils import ambient_temp_simple
 
 class VesselControl(IntEnum):
     FORWARD_THRUST_ENGAGE = 0x00
@@ -18,7 +19,7 @@ class VesselControl(IntEnum):
     CW_THRUST_ENGAGE = 0x06
     CW_THRUST_DISENGAGE = 0x07
     REQUEST_CONTROL = 0x08
-    DETACH_STAGE = 0x09
+    DEPLOY_STAGE = 0x09
 
 class VesselState(IntEnum):
     FORWARD_THRUSTER_ON = 0x00
@@ -70,8 +71,13 @@ class Vessel(PhysicsObject):
     regions_already_visited: List[int] = field(default_factory=list)
     region: int = 0  # Region ID for the vessel, used for proximity cues
     stage: int = 0
+    num_stages: int = 0
     payload: int = 0
     lifetime_revenue: int = 0
+    maximum_operating_tempterature_c: float = 100.0
+    current_temperature_c: float = 20.0
+    thermal_resistance: float = 100
+    deployment_ready: bool = False
 
 
 
@@ -157,6 +163,11 @@ class Vessel(PhysicsObject):
         _agency.distribute_money(_payload_income_per_second / _tickrate)
 
 
+    def check_deployment_ready(self):
+        self.deployment_ready = False
+        if(self.stage == 1 and self.altitude >= (self.home_planet.atmosphere_km * .98)):
+            self.deployment_ready = True
+
 
     # Extended Physics
     def do_update(self, dt: float, acc: Tuple[float, float]):
@@ -190,6 +201,9 @@ class Vessel(PhysicsObject):
 
         #3 - Do Payload Mechanics
         self.do_payload_mechanics(dt)
+        self.cool_towards_ambient(dt)
+
+        self.check_deployment_ready()
 
         # Clamp to speed of light (FOR NOW!)
         vx, vy = self.velocity
@@ -218,6 +232,11 @@ class Vessel(PhysicsObject):
         chunkpacket += struct.pack('<B', self.landed)
         chunkpacket += struct.pack('<f', self.liquid_fuel_kg)
         chunkpacket += struct.pack('<f', self.liquid_fuel_capacity_kg)
+        chunkpacket += struct.pack('<f', self.maximum_operating_tempterature_c)
+        chunkpacket += struct.pack('<f', self.current_temperature_c)
+        chunkpacket += struct.pack('<f', self.ambient_temp_K)
+        chunkpacket += struct.pack('<H', self.stage)
+        chunkpacket += struct.pack('<B', self.deployment_ready)
 
         for player in self.shared.players.values():
             session = player.session
@@ -275,6 +294,7 @@ class Vessel(PhysicsObject):
             self.altitude + self.altitude_delta * dt,
             self.home_planet.atmosphere_km
         )
+
             
     def _clamp01(self, x: float) -> float:
         return 0.0 if x < 0.0 else (1.0 if x > 1.0 else x)
@@ -401,9 +421,13 @@ class Vessel(PhysicsObject):
                 fuel_needed = fuelConsumption * dt
                 if self.liquid_fuel_kg >= fuel_needed:
                     self.liquid_fuel_kg -= fuel_needed
+                    heat = cd.get("attributes", {}).get("forward-fire-heat", 1.0) * 0.001
+                    self.current_temperature_c += heat * dt
                 else:
                     kN = 0.0
                     self.control_state[VesselState.FORWARD_THRUSTER_ON] = False
+
+            
 
             total_kN += kN * mult  # accumulate effective forward thrust
 
@@ -428,9 +452,13 @@ class Vessel(PhysicsObject):
                 fuel_needed = fuelConsumption * dt
                 if self.liquid_fuel_kg >= fuel_needed:
                     self.liquid_fuel_kg -= fuel_needed
+                    heat = component_data.get("attributes", {}).get("ccw-fire-heat", 1.0) * 0.001
+                    self.current_temperature_c += heat * dt
                 else:
                     thrust_kN = 0.0
                     self.control_state[VesselState.CCW_THRUST_ON] = False
+
+
 
             if thrust_kN > 0:
                 local_point = (component.x, component.y)
@@ -450,9 +478,13 @@ class Vessel(PhysicsObject):
                 fuel_needed = fuelConsumption * dt
                 if self.liquid_fuel_kg >= fuel_needed:
                     self.liquid_fuel_kg -= fuel_needed
+                    heat = component_data.get("attributes", {}).get("cw-fire-heat", 1.0) * 0.001
+                    self.current_temperature_c += heat * dt
                 else:
                     thrust_kN = 0.0
                     self.control_state[VesselState.CW_THRUST_ON] = False
+
+            
 
             if thrust_kN > 0:
                 local_point = (component.x, component.y)
@@ -472,9 +504,13 @@ class Vessel(PhysicsObject):
                 fuel_needed = fuelConsumption * dt
                 if self.liquid_fuel_kg >= fuel_needed:
                     self.liquid_fuel_kg -= fuel_needed
+                    heat = component_data.get("attributes", {}).get("reverse-fire-heat", 1.0) * 0.001
+                    self.current_temperature_c += heat * dt
                 else:
                     thrust_kN = 0.0
                     self.control_state[VesselState.REVERSE_THRUSTER_ON] = False
+
+
 
             if thrust_kN > 0:
                 local_point = (component.x, component.y)
@@ -541,6 +577,99 @@ class Vessel(PhysicsObject):
         vx, vy = self.velocity
         self.velocity = (vx + dvx, vy + dvy)
 
+
+    def cool_towards_ambient(self, dt: float):
+        # Convert server dt to “real seconds” like you do for thrust
+        scaled_dt = dt / getattr(self.shared, "gamespeed", 1.0)
+
+        # Target = ambient (K) converted to °C
+        ambient_c = float(getattr(self, "ambient_temp_K", 2.7)) - 273.15
+
+        # Time constant (seconds) — you already have a knob
+        tau = max(1e-3, float(getattr(self, "thermal_resistance", 100.0)))
+
+        # Optional: faster coupling in atmosphere (stronger convection)
+        if self.home_planet is not None:
+            # treat anything below top-of-atmosphere as “in air”
+            dx = self.position[0] - self.home_planet.position[0]
+            dy = self.position[1] - self.home_planet.position[1]
+            alt_km = math.hypot(dx, dy) - float(self.home_planet.radius_km)
+            if alt_km <= float(self.home_planet.atmosphere_km):
+                tau *= 0.25  # cool/heat 4× faster in air (tweak to taste)
+
+        # Exponential smoothing toward ambient (stable)
+        alpha = 1.0 - math.exp(-scaled_dt / tau)
+        self.current_temperature_c += (ambient_c - self.current_temperature_c) * alpha
+
+
+from collections import deque
+
+def calculate_component_stages(components, connections, component_data_lookup, payload_index=None):
+    """
+    Calculates stage numbers for components based on connections.
+
+    Rules for now:
+      - payload = stage 0
+      - all connected components = stage 1 (no couplers yet)
+    Future:
+      - couplers will add +1 stage when traversed
+
+    Args:
+        components: list of AttachedVesselComponent
+        connections: list of [child_idx, parent_idx]
+        component_data_lookup: dict of component definitions
+        payload_index: optional index of payload component
+
+    Returns:
+        list[int]: stage per component index
+    """
+    n = len(components)
+    stages = [-1] * n  # -1 means unvisited
+
+    # Pick payload index
+    if payload_index is None:
+        for i, comp in enumerate(components):
+            cd = component_data_lookup.get(comp.id, {})
+            attrs = cd.get("attributes", {})
+            if attrs.get("payload_base_income") is not None or attrs.get("is_payload") or cd.get("type") == "payload":
+                payload_index = i
+                break
+        if payload_index is None:
+            payload_index = 0  # fallback
+
+    # Build adjacency list
+    adj = [[] for _ in range(n)]
+    for a, b in connections:
+        adj[a].append(b)
+        adj[b].append(a)
+
+    # BFS
+    queue = deque()
+    stages[payload_index] = 0
+    queue.append(payload_index)
+
+    while queue:
+        cur = queue.popleft()
+        cur_stage = stages[cur]
+
+        for neighbor in adj[cur]:
+            if stages[neighbor] == -1:
+                # TODO: future: if components[neighbor] is coupler, stage = cur_stage + 1
+                if cur_stage == 0:
+                    stages[neighbor] = 1
+                else:
+                    stages[neighbor] = cur_stage  # no couplers yet, so same stage as parent
+                queue.append(neighbor)
+
+    # Fill any unconnected parts with stage 1
+    for i in range(n):
+        if stages[i] == -1:
+            stages[i] = 1
+
+    return stages
+
+
+
 def construct_vessel_from_request(shared, player, vessel_request_data) -> Vessel:
     #GET A REFERENCE TO THE COMPONENT DATA
     component_data_lookup = shared.component_data
@@ -552,6 +681,8 @@ def construct_vessel_from_request(shared, player, vessel_request_data) -> Vessel
     launchpad_building_type= launchpad_data.get("type", 2)
     launchpad_angle = launchpad_data.get("position_angle", 0)
     vessel_name = vessel_request_data.get("name", "Unnamed Vessel")
+    connections = [(int(a), int(b)) for a, b in vessel_request_data.get("connections", [])]
+    payload_idx = None
     highest_stage = 0
 
 
@@ -573,7 +704,13 @@ def construct_vessel_from_request(shared, player, vessel_request_data) -> Vessel
     #Subtract money
     player.money -= total_cost
     print("Creating vessel")
+
+
+    stages = calculate_component_stages(components, connections, component_data_lookup, payload_idx)
     #Create the vessel
+    for comp, st in zip(components, stages):
+        setattr(comp, "stage", st)
+
     center_component = components[0]
     vessel = Vessel(
         object_type=ObjectType.BASIC_VESSEL,
@@ -587,6 +724,7 @@ def construct_vessel_from_request(shared, player, vessel_request_data) -> Vessel
     vessel.shared=shared
     vessel.name = vessel_name
     vessel.launchpad_planet_id = planet_id
+    vessel.stage, vessel.num_stages = max(stages), max(stages) + 1
 
     # Add vessel to its agency
     agency = shared.agencies.get(player.agency_id)

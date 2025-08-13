@@ -118,6 +118,7 @@ class PhysicsObject(GameObject):
     velocity: Tuple[float, float] = (0.0, 0.0)
     mass: float = 1.0
     radius_km: float = 10.0  # Default for non-planetary objects
+    ambient_temp_K: float = 2.7
 
     def do_update(self, dt: float, acc: Tuple[float, float]):
         vx, vy = self.velocity
@@ -152,6 +153,9 @@ class Planet(PhysicsObject):
     # Resource map. {Item: probability weight}
     resource_map: Dict[int, float] = field(default_factory=dict, init=False, repr=False)
 
+    planet_surface_temp: float = 20.0
+
+
     def set_regions(self, regions: Dict[int, float]) -> None:
         self.regions_km = dict(regions)
         items: List[Tuple[int, float]] = sorted(self.regions_km.items(), key=lambda kv: kv[1])  # small→large
@@ -162,6 +166,8 @@ class Planet(PhysicsObject):
     def set_resources(self, resource_map: Dict[int, float]) -> None:
         self.resource_map = dict(resource_map)
 
+    def set_temperature(self, temperature: float) -> None:
+        self.planet_surface_temp = temperature
 
     def check_in_region(self, distance_km: float) -> Optional[int]:
         if not self._region_edges:
@@ -217,6 +223,7 @@ class Sun(Planet):
             atmosphere_km=1_000_000.0,
             atmosphere_density=1.0
         )
+        self.set_temperature(5778.0)
 
 class Earth(Planet):
     def __init__(self):
@@ -240,6 +247,8 @@ class Earth(Planet):
             Resource.DIAMOND: 1
 
         })
+
+        self.set_temperature(288.0)
 
     def do_update(self, dt: float, acc: Tuple[float, float]):
         super().do_update(dt, acc)
@@ -272,6 +281,8 @@ class Mars(Planet):
             Region.MARS_DISTANT: 1_000_000
         })
 
+        self.set_temperature(210.0)
+
 
     def do_update(self, dt: float, acc: Tuple[float, float]):
         super().do_update(dt, acc)
@@ -291,6 +302,8 @@ class Venus(Planet):
             atmosphere_density=2.0
         )
 
+        self.set_temperature(737.0)
+
     def do_update(self, dt: float, acc: Tuple[float, float]):
         super().do_update(dt, acc)
         degrees_per_second = 360.0 / 20_995_200.0  # degrees per second degrees / seconds in day)
@@ -308,6 +321,8 @@ class Mercury(Planet):
             atmosphere_km=5000.0,              #km*10
             atmosphere_density=0.5
         )
+
+        self.set_temperature(440.0)
 
     def do_update(self, dt: float, acc: Tuple[float, float]):
         super().do_update(dt, acc)
@@ -332,6 +347,8 @@ class Jupiter(Planet):
             Region.JUPITER_DISTANT: 300_000_000
         })
 
+        self.set_temperature(165.0)
+
     def do_update(self, dt: float, acc: Tuple[float, float]):
         super().do_update(dt, acc)
         degrees_per_second = 360.0 / 35_430.0  # degrees per second degrees / seconds in day)
@@ -354,6 +371,8 @@ class Saturn(Planet):
             Region.SATURN_NEAR: 40_000_000,
             Region.SATURN_DISTANT: 400_000_000
         })
+
+        self.set_temperature(134.0)
 
     def do_update(self, dt: float, acc: Tuple[float, float]):
         super().do_update(dt, acc)
@@ -378,6 +397,8 @@ class Uranus(Planet):
             Region.URANUS_DISTANT: 800_000_000
         })
 
+        self.set_temperature(76.0)
+
     def do_update(self, dt: float, acc: Tuple[float, float]):
         super().do_update(dt, acc)
         degrees_per_second = 360.0 / 62_092.0  # degrees per second degrees / seconds in day)
@@ -400,6 +421,8 @@ class Neptune(Planet):
             Region.NEPTUNE_NEAR: 100_000_000,
             Region.NEPTUNE_DISTANT: 1_000_000_000
         })
+
+        self.set_temperature(72.0)
 
     def do_update(self, dt: float, acc: Tuple[float, float]):
         super().do_update(dt, acc)
@@ -436,6 +459,9 @@ class Luna(Planet):
             atmosphere_km=1000.0,
             atmosphere_density=0.5
         )
+
+        self.set_temperature(220.0)
+
         self.set_regions({
             Region.MOON_NEAR: 50_000
         })
