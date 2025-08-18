@@ -11,7 +11,8 @@
             "upgrade_costs" : {
                 "2" : 50000,
                 "3" : 100000,
-                "4" : 200000
+                "4" : 200000,
+                "5" : 500000
             },
             "attributes" : {
                 "base_income" : 200,
@@ -31,6 +32,10 @@
                     "4" : {
                         "add_base_income" : 300,
                         "unlock_components" : [14, 15, 16]
+                    },
+                    "5" : {
+                        "add_base_income" : 300,
+                        "unlock_components" : [18, 19, 20, 21, 22]
                     }
                 }
             }
@@ -709,7 +714,7 @@
         }, 
         {
             "id" : 18,
-            "category" : "hull",
+            "category" : "attachment",
             "name" : "Thermal Plate", 
             "cost" : 10000,
             "mass" : 10,
@@ -727,7 +732,7 @@
         }, 
         {
             "id" : 19,
-            "category" : "hull",
+            "category" : "attachment",
             "name" : "Temperature Regulator", 
             "cost" : 100000,
             "mass" : 60,
@@ -744,7 +749,60 @@
                     "snaps_provided" : ["attachment-center-give"]
                 }
             ]
-        }                                                 
+        }, 
+        {
+            "id" : 20,
+            "category" : "attachment",
+            "name" : "Battery Pack", 
+            "cost" : 30000,
+            "mass" : 30,
+            "attributes" : {
+                "power-capacity" : 5000
+            },
+            "snap_points" : [
+                {
+                    "x" : 0,
+                    "y" : 0,
+                    "snaps_accepted" : ["attachment-center-receive"],
+                    "snaps_provided" : ["attachment-center-give"]
+                }
+            ]
+        }, 
+        {
+            "id" : 21,
+            "category" : "attachment",
+            "name" : "Aerodynamic Nose Cone", 
+            "cost" : 30000,
+            "mass" : 50,
+            "attributes" : {
+            },
+            "snap_points" : [
+                {
+                    "x" : 0,
+                    "y" : 0,
+                    "snaps_accepted" : ["fairing-receive"],
+                    "snaps_provided" : ["fairing-give"]
+                }
+            ]
+        }, 
+        {
+            "id" : 22,
+            "category" : "attachment",
+            "name" : "Solar Panel", 
+            "cost" : 30000,
+            "mass" : 50,
+            "attributes" : {
+                "solar-power" : 10
+            },
+            "snap_points" : [
+                {
+                    "x" : 0,
+                    "y" : 0,
+                    "snaps_accepted" : ["attachment-center-receive", "attachment-left-give", "attachment-right-give"],
+                    "snaps_provided" : ["attachment-center-give", "attachment-right-give", "attachment-left-give"]
+                }
+            ]
+        }                                                      
     ]
         
 }
