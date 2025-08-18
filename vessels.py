@@ -29,6 +29,9 @@ class VesselState(IntEnum):
     CCW_THRUST_ON = 0x02
     CW_THRUST_ON = 0x03
 
+class Systems(IntEnum):
+    UNDEFINED = 0
+    THERMAL_REGULATOR = 1
 
 @dataclass
 class AttachedVesselComponent:
@@ -37,6 +40,14 @@ class AttachedVesselComponent:
     y: float
     paint1 : int
     paint2 : int
+
+@dataclass
+class ElectricalSystem:
+    type: Systems
+    amount: float = 0.0
+    power_draw: float = 0.0
+    active: bool = True
+
 
 @dataclass
 class Vessel(PhysicsObject):
@@ -51,6 +62,9 @@ class Vessel(PhysicsObject):
     liquid_fuel_capacity_kg: float = 0.0
     capable_forward_thrust: float = 0.0
     capable_reverse_thrust: float = 0.0
+    power_capacity: float = 0.0
+    solar_power: float = 0.0
+    power: float = 0.0
     object_type: ObjectType = ObjectType.BASIC_VESSEL
     center_of_mass: Tuple[float, float] = field(default=(0.0, 0.0), init=False)
     controlled_by: int = 0 
@@ -90,6 +104,11 @@ class Vessel(PhysicsObject):
 
     fuel_by_stage: Dict[int, float] = field(default_factory=dict, repr=False)
     capacity_by_stage: Dict[int, float] = field(default_factory=dict, repr=False)
+    power_by_stage: Dict[int, float] = field(default_factory=dict, repr=False)
+    power_capacity_by_stage: Dict[int, float] = field(default_factory=dict, repr=False)
+
+    #--- Electrical Systems ---
+    systems: Dict[Systems, ElectricalSystem] = field(default_factory=dict, repr=False)
 
 
 
@@ -102,6 +121,7 @@ class Vessel(PhysicsObject):
 
         # recompute capacities and thrust caps per stage
         self.capacity_by_stage.clear()
+        self.power_capacity_by_stage.clear()
         stage_forward = {}
         stage_reverse = {}
 
@@ -109,6 +129,14 @@ class Vessel(PhysicsObject):
         self.dry_mass = 0.0
         weighted_x = 0.0
         weighted_y = 0.0
+        self.solar_power = 0.0
+
+        self.systems.clear()
+
+        # reset thermal resistance
+        base_tau = 100.0             
+        attached_tau_bonus = 0.0 
+
 
         # if stage not yet set, infer from components
         if not self.components:
@@ -132,8 +160,12 @@ class Vessel(PhysicsObject):
 
             # per-stage fuel capacity
             cap = float(attrs.get("liquid-fuel", 0.0))
+            power_cap = float(attrs.get("power-capacity", 0.0))
             if cap > 0:
                 self.capacity_by_stage[st] = self.capacity_by_stage.get(st, 0.0) + cap
+            if power_cap > 0:
+                self.power_capacity_by_stage[st] = self.power_capacity_by_stage.get(st, 0.0) + power_cap
+            self.solar_power += float(attrs.get("solar-power", 0.0))
 
             # per-stage thrust capability
             stage_forward[st] = stage_forward.get(st, 0.0) + float(attrs.get("forward-thrust", 0.0))
@@ -150,10 +182,33 @@ class Vessel(PhysicsObject):
                 game = self.shared.game
                 self.telescope_targets = [game.sun, game.luna, game.mars, game.venus]
 
+            #FOR EVERY ATTACHED COMPONENT:
+            if st <= self.stage:
+                self.add_system(
+                    Systems.THERMAL_REGULATOR,
+                    float(attrs.get("thermal-regulation", 0.0)),
+                    float(attrs.get("thermal-regulation-power-draw", 0.0)),
+                    True
+                )
+
+                attached_tau_bonus += float(attrs.get("thermal-resistance", 0.0))
+
+        # set thermal resistance based on attached components
+        self.thermal_resistance = max(1e-3, base_tau + attached_tau_bonus)
+
         # initialize fuel pools if empty (fill each stage to capacity)
         if not self.fuel_by_stage:
             for st, cap in self.capacity_by_stage.items():
                 self.fuel_by_stage[st] = cap
+
+        # initialize power stores if empty (start full per stage)
+        if not self.power_by_stage:
+            for st, cap in self.power_capacity_by_stage.items():
+                self.power_by_stage[st] = cap
+        else:
+            # ensure keys exist & clamp to capacity
+            for st, cap in self.power_capacity_by_stage.items():
+                self.power_by_stage[st] = min(self.power_by_stage.get(st, 0.0), cap)
 
         # expose "capable_*" for the current stage only (so UI/logic stays intuitive)
         self.capable_forward_thrust = float(stage_forward.get(self.stage, 0.0))
@@ -170,11 +225,33 @@ class Vessel(PhysicsObject):
         self.liquid_fuel_capacity_kg = self._current_stage_capacity()
         self.liquid_fuel_kg = self._current_stage_fuel()
 
+        self.power_capacity = self._attached_power_capacity()
+        self.power = self._attached_power()
+
 
     def calculate_mass(self, component_data_lookup: Dict[int, Dict]) -> float:
         dry = sum(component_data_lookup.get(comp.id, {}).get("mass", 0.0) for comp in self.components)
         attached_fuel = sum(v for s, v in self.fuel_by_stage.items() if s <= self.stage)
         return dry + attached_fuel
+
+
+    def add_system(self, sys_type: Systems, amount: float, draw: float, active: bool = True):
+        if amount <= 0.0:
+            return  
+
+        existing = self.systems.get(sys_type)
+        if existing:
+            existing.amount += amount
+            existing.power_draw += draw
+            existing.active = existing.active or active
+        else:
+            self.systems[sys_type] = ElectricalSystem(
+                type=sys_type,
+                amount=amount,
+                power_draw=draw,
+                active=active,
+            )
+
 
 
 
@@ -186,6 +263,68 @@ class Vessel(PhysicsObject):
     
     def get_id(self) -> int:
         return self.object_id
+
+
+    # --- Power (pooled across attached stages) ---
+
+    def _attached_power_capacity(self) -> float:
+        """Sum of capacities for all attached stages (s <= current)."""
+        return sum(cap for s, cap in self.power_capacity_by_stage.items() if s <= self.stage)
+
+    def _attached_power(self) -> float:
+        """Sum of charge for all attached stages (s <= current)."""
+        return sum(p for s, p in self.power_by_stage.items() if s <= self.stage)
+
+    def _draw_power(self, amount: float) -> bool:
+        """
+        Consume from the attached pool, drawing stage-by-stage starting
+        with the CURRENT stage, then descending (stage-1, stage-2, ...).
+        """
+        if amount <= 0:
+            return True
+
+        remaining = amount
+        # consume from current stage down to stage 0
+        for s in range(int(self.stage), -1, -1):
+            cur = self.power_by_stage.get(s, 0.0)
+            if cur <= 0.0:
+                continue
+            take = cur if cur <= remaining else remaining
+            self.power_by_stage[s] = cur - take
+            remaining -= take
+            if remaining <= 0.0:
+                break
+
+        if remaining > 0.0:
+            # not enough total power
+            # (undo is optional; we keep partial draw for realism)
+            self.power = self._attached_power()
+            return False
+
+        self.power = self._attached_power()
+        return True
+
+    def _charge_power(self, amount: float):
+        """
+        Add charge into the attached pool. Default strategy:
+        fill the CURRENT stage first, then descend to lower stages.
+        """
+        if amount <= 0:
+            return
+        remaining = amount
+        for s in range(int(self.stage), -1, -1):
+            cap = self.power_capacity_by_stage.get(s, 0.0)
+            cur = self.power_by_stage.get(s, 0.0)
+            room = max(0.0, cap - cur)
+            if room <= 0.0:
+                continue
+            put = room if room <= remaining else remaining
+            self.power_by_stage[s] = cur + put
+            remaining -= put
+            if remaining <= 0.0:
+                break
+        self.power = self._attached_power()
+
     
     def do_control(self, control):
         match control:
@@ -369,8 +508,11 @@ class Vessel(PhysicsObject):
         #3 - Do Payload Mechanics
         self.do_payload_mechanics(dt)
         self.cool_towards_ambient(dt)
-
         self.check_deployment_ready()
+
+        #4 - Charge Power
+        if self.solar_power > 0.0:
+            self._charge_power(self.solar_power * dt)
 
         # Clamp to speed of light (FOR NOW!)
         vx, vy = self.velocity
@@ -380,7 +522,7 @@ class Vessel(PhysicsObject):
             scale = C_KM_S / speed
             self.velocity = (vx * scale, vy * scale)
 
-        # 4. Stream vessel data to clients
+        # 4 -  Stream vessel data to clients
         chunkpacket = bytearray()
         chunkpacket.append(DataGramPacketType.VESSEL_STREAM)
         chunkpacket += struct.pack('<Q', self.object_id)
@@ -399,6 +541,8 @@ class Vessel(PhysicsObject):
         chunkpacket += struct.pack('<B', self.landed)
         chunkpacket += struct.pack('<f', self.liquid_fuel_kg)
         chunkpacket += struct.pack('<f', self.liquid_fuel_capacity_kg)
+        chunkpacket += struct.pack('<f', self.power_capacity)
+        chunkpacket += struct.pack('<f', self.power)
         chunkpacket += struct.pack('<f', self.maximum_operating_tempterature_c)
         chunkpacket += struct.pack('<f', self.current_temperature_c)
         chunkpacket += struct.pack('<f', self.ambient_temp_K)
@@ -792,27 +936,48 @@ class Vessel(PhysicsObject):
 
 
     def cool_towards_ambient(self, dt: float):
-        # Convert server dt to “real seconds” like you do for thrust
-        scaled_dt = dt / getattr(self.shared, "gamespeed", 1.0)
+        # Convert server dt to “real seconds”
+        scaled_dt = dt / max(1e-9, float(getattr(self.shared, "gamespeed", 1.0)))
 
-        # Target = ambient (K) converted to °C
+        # Passive ambient coupling
         ambient_c = float(getattr(self, "ambient_temp_K", 2.7)) - 273.15
-
-        # Time constant (seconds) — you already have a knob
         tau = max(1e-3, float(getattr(self, "thermal_resistance", 100.0)))
 
-        # Optional: faster coupling in atmosphere (stronger convection)
+        # Stronger convection in atmosphere (same idea you had)
         if self.home_planet is not None:
-            # treat anything below top-of-atmosphere as “in air”
             dx = self.position[0] - self.home_planet.position[0]
             dy = self.position[1] - self.home_planet.position[1]
             alt_km = math.hypot(dx, dy) - float(self.home_planet.radius_km)
             if alt_km <= float(self.home_planet.atmosphere_km):
-                tau *= 0.25  # cool/heat 4× faster in air (tweak to taste)
+                tau *= 0.25
 
-        # Exponential smoothing toward ambient (stable)
-        alpha = 1.0 - math.exp(-scaled_dt / tau)
-        self.current_temperature_c += (ambient_c - self.current_temperature_c) * alpha
+        # Passive exponential move toward ambient
+        alpha_passive = 1.0 - math.exp(-scaled_dt / tau)
+        self.current_temperature_c += (ambient_c - self.current_temperature_c) * alpha_passive
+
+        # --- Active thermal regulation (toward 20 °C), consumes power ---
+        reg = self.systems.get(Systems.THERMAL_REGULATOR)
+        if reg and reg.active and (reg.amount > 0.0):
+            target_c = 20.0
+
+            # Convert 'amount' into an effective time constant (tweakable knob):
+            # larger amount -> faster pull to 20C. Example: tau_reg = 60s / amount
+            tau_reg = max(1e-3, 60.0 / float(reg.amount))
+            alpha_reg = 1.0 - math.exp(-scaled_dt / tau_reg)
+
+            # Draw power for this tick; scale effect if power is insufficient
+            needed_power = max(0.0, float(reg.power_draw)) * scaled_dt
+            power_fraction = 1.0
+            if needed_power > 0.0:
+                before = self.power
+                ok = self._draw_power(needed_power)
+                used = max(0.0, before - self.power)
+                power_fraction = min(1.0, used / needed_power) if needed_power > 0 else 1.0
+
+            # Apply regulation scaled by available power
+            if power_fraction > 0.0:
+                self.current_temperature_c += (target_c - self.current_temperature_c) * (alpha_reg * power_fraction)
+
 
 
 from collections import deque

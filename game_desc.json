@@ -208,6 +208,12 @@
                     "y" : -64,
                     "snaps_accepted" : ["attachment-right-give"], 
                     "snaps_provided" : ["attachment-right-receive"]
+                }, 
+                {
+                    "x" : 0,
+                    "y" : -64,
+                    "snaps_accepted" : ["attachment-center-give"], 
+                    "snaps_provided" : ["attachment-center-receive"]
                 }
             ]
 
@@ -245,7 +251,9 @@
             "mass" : 150,
             "attributes" : {
                 "is-payload" : 1,
-                "payload_base_income" : 350
+                "payload_base_income" : 350,
+                "power-capacity" : 1000,
+                "solar-power" : 5
             }, 
             "snap_points" : [
                 {
@@ -585,6 +593,12 @@
                     "y" : 128,
                     "snaps_accepted" : ["fuel-receive"], 
                     "snaps_provided" : ["fuel-give"]
+                }, 
+                {
+                    "x" : 0,
+                    "y" : -64,
+                    "snaps_accepted" : ["attachment-center-give"], 
+                    "snaps_provided" : ["attachment-center-receive"]
                 }
             ]
 
@@ -634,6 +648,12 @@
                     "y" : -104,
                     "snaps_accepted" : ["attachment-right-give"], 
                     "snaps_provided" : ["attachment-right-receive"]
+                }, 
+                {
+                    "x" : 0,
+                    "y" : -64,
+                    "snaps_accepted" : ["attachment-center-give"], 
+                    "snaps_provided" : ["attachment-center-receive"]
                 }
             ]
 
@@ -662,7 +682,69 @@
                 }
             ]
 
-        }                                          
+        }, 
+        {
+            "id" : 17,
+            "category" : "hull",
+            "name" : "Horizontal Stage Seperator", 
+            "cost" : 10000,
+            "mass" : 40,
+            "attributes" : {
+                "stage-add" : 1
+            },
+            "snap_points" : [
+                {
+                    "x" : -24,
+                    "y" : 0,
+                    "snaps_accepted" : ["attachment-left-receive", "attachment-right-give"],
+                    "snaps_provided" : ["attachment-left-give", "attachment-right-receive"]
+                },
+                {
+                    "x" : 24,
+                    "y" : 0,
+                    "snaps_accepted" : ["attachment-right-receive", "attachment-left-give"],
+                    "snaps_provided" : ["attachment-right-give", "attachment-left-receive"]
+                }
+            ]
+        }, 
+        {
+            "id" : 18,
+            "category" : "hull",
+            "name" : "Thermal Plate", 
+            "cost" : 10000,
+            "mass" : 10,
+            "attributes" : {
+                "thermal-resistance" : 5
+            },
+            "snap_points" : [
+                {
+                    "x" : 0,
+                    "y" : 0,
+                    "snaps_accepted" : ["attachment-center-receive", "attachment-left-give", "attachment-right-give"],
+                    "snaps_provided" : ["attachment-center-give", "attachment-right-give", "attachment-left-give"]
+                }
+            ]
+        }, 
+        {
+            "id" : 19,
+            "category" : "hull",
+            "name" : "Temperature Regulator", 
+            "cost" : 100000,
+            "mass" : 60,
+            "attributes" : {
+                "thermal-resistance" : 20,
+                "thermal-regulation" : 10,
+                "thermal-regulation-power-draw" : 10
+            },
+            "snap_points" : [
+                {
+                    "x" : 0,
+                    "y" : 0,
+                    "snaps_accepted" : ["attachment-center-receive"],
+                    "snaps_provided" : ["attachment-center-give"]
+                }
+            ]
+        }                                                 
     ]
         
 }
