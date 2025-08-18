@@ -237,14 +237,17 @@ class Earth(Planet):
             atmosphere_density=1.0
         )
         self.set_resources({
-            Resource.METAL: 50,
-            Resource.OIL: 30,
-            Resource.URANIUM: 5,
-            Resource.POLYMER: 5,
-            Resource.SILICON: 10,
-            Resource.WATER: 100,
-            Resource.GOLD: 2,
-            Resource.DIAMOND: 1
+            Resource.METAL: 500,
+            Resource.OIL: 300,
+            Resource.URANIUM: 50,
+            Resource.SILICON: 100,
+            Resource.WATER: 1000,
+            Resource.GOLD: 20,
+            Resource.DIAMOND: 10, 
+            Resource.PLUTONIUM: 3, 
+            Resource.XENON: 5,
+            Resource.BERILLYUM: 30,
+            Resource.OBSIDIAN_SHARD: 1
 
         })
 

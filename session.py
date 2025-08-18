@@ -1,9 +1,10 @@
 import asyncio
-from packet_types import PacketType
+from packet_types import ChatMessage, PacketType
 from agency import Agency
 import json
 from buildings import Building
 from vessels import Vessel, AttachedVesselComponent, construct_vessel_from_request, VesselControl
+import struct
 
 # A session connects a TCP socket to a server-side player
 
@@ -39,15 +40,26 @@ class Session:
         self.temp_id = self.control_server.get_next_temp_id()
 
     async def send_game_json_packet(self):
-        packet = bytearray()
-        packet += PacketType.GAME_JSON.to_bytes(2, 'little')
         gamedesc = self.control_server.shared.game_description
-        game_json = json.dumps(gamedesc)
-        packet += game_json.encode('utf-8')
+        payload = json.dumps(gamedesc, separators=(',', ':')).encode('utf-8')  # minified JSON
+        packet = bytearray()
+        packet += PacketType.GAME_JSON.to_bytes(2, 'little')     # u16 opcode
+        packet += struct.pack('<I', len(payload))                # u32 length (little-endian)
+        packet += payload                                        # bytes
         await self.send(packet)
 
     async def send_welcome(self):
         print(f"[+] Connection from {self.remote_ip}, assigned ID {self.temp_id}")
+
+
+    def _get_player_and_agency(self):
+        player = self.player or self.control_server.get_player_by_steamid(self.steam_id)
+        if not player:
+            print("⚠️ No player bound to this session"); return None, None
+        agency = self.control_server.shared.agencies.get(player.agency_id)
+        if not agency:
+            print(f"⚠️ Player {player.steam_id} has no valid agency"); return player, None
+        return player, agency
 
     async def read_and_process_packet(self):
         header = await self.reader.readexactly(2)
@@ -75,18 +87,43 @@ class Session:
             print(f"🧾 Raw packet bytes: {raw_packet.hex()}")
 
         # 0x0002    -   The client sent a chat message, and the TCP server will need to relay
-        elif function_code == PacketType.CHAT_MESSAGE_RELAY: 
-            msg_type = await self.reader.readexactly(1)
-            message = await self.reader.readuntil(b'\x00')
-            decoded = message[:-1].decode()
-            print(f"{self.remote_ip} says: \"{decoded}\"")
-            #TCP RELAY
-            packet = bytearray()
-            packet += PacketType.CHAT_MESSAGE_RELAY.to_bytes(2, 'little')  # Function code
-            packet += msg_type                                             # Message type
-            packet += self.steam_id.to_bytes(8, 'little')                  # From who
-            packet += message                                              # Original message
-            await self.control_server.broadcast(packet)
+        elif function_code == PacketType.CHAT_MESSAGE_RELAY:
+            msg_type_raw = await self.reader.readexactly(1)
+            message      = await self.reader.readuntil(b'\x00')
+
+            # Decode + coerce enum
+            decoded = message[:-1].decode(errors="replace")
+            try:
+                msg_type = ChatMessage(int.from_bytes(msg_type_raw, "little"))
+            except ValueError:
+                print(f"⚠️ Unknown chat message type byte={msg_type_raw!r}; dropping")
+                return
+
+            sender_agency_id = getattr(getattr(self, "player", None), "agency_id", None)
+            print(f"{self.remote_ip} says ({msg_type.name}): \"{decoded}\" (agency={sender_agency_id})")
+
+            # Rebuild relay packet exactly as clients expect
+            pkt = bytearray()
+            pkt += PacketType.CHAT_MESSAGE_RELAY.to_bytes(2, "little")
+            pkt += msg_type_raw
+            pkt += self.steam_id.to_bytes(8, "little")
+            pkt += message  # includes trailing NUL
+
+            match msg_type:
+                case ChatMessage.GLOBAL:
+                    await self.control_server.broadcast(pkt)
+
+                case ChatMessage.AGENCY:
+                    if sender_agency_id is None:
+                        print("⚠️ Sender has no agency; dropping agency chat")
+                        return
+                    sent = await self.control_server.broadcast_to_agency(sender_agency_id, pkt)
+                    print(f"🏢 Agency chat relayed to {sent} live session(s) in agency {sender_agency_id}")
+
+                case _:
+                    # Not handled yet; ignore silently (or log if you want)
+                    pass
+
 
 
         # 0x0004    -   Keep alive packets show that the client is connected even if they're being lame and boring
@@ -162,7 +199,7 @@ class Session:
                     print(f"❌ Player {self.steam_id} cannot afford building (needs {cost}, has {player.money})")
                     return 
                 player.money -= cost
-                new_building = Building(building_type, self.control_server.shared, position_angle)
+                new_building = Building(building_type, self.control_server.shared, position_angle, object_id, agency)
                 agency.add_building_to_base(object_id, new_building)
 
         
@@ -227,9 +264,32 @@ class Session:
             else:
                 if(vessel.controlled_by == _player.steamID):
                     vessel.do_control(control_key)
+                    if( control_key == VesselControl.SET_TELESCOPE_TARGET_ANGLE):
+                        angle = await self.reader.readexactly(4)
+                        angle_value = struct.unpack('<f', angle)[0]
+                        print(f"Set telescope rcs angle to {angle_value}")
+                        vessel.telescope_rcs_angle = angle_value
                 
 
         
+        elif function_code == PacketType.UPGRADE_BUILDING:
+            planet_id = int.from_bytes(await self.reader.readexactly(8), 'little')
+            building_type = int.from_bytes(await self.reader.readexactly(2), 'little')
+            to_level = int.from_bytes(await self.reader.readexactly(2), 'little')
+
+            player, agency = self._get_player_and_agency()
+            if not player or not agency:
+                return
+
+            ok, reason, cost, new_level = agency.try_upgrade_building(player, planet_id, building_type, to_level)
+            if ok:
+                print(f"✅ Upgraded building {building_type} on planet {planet_id} "
+                    f"from L? to L{new_level} for {cost}. Player now has {player.money}.")
+            else:
+                print(f"❌ Upgrade failed ({reason}). Needed {cost}, player has {player.money}.")
+
+    
+
 
 
         else:

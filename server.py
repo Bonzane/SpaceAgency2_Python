@@ -5,7 +5,7 @@ from session import Session
 from player import Player
 from agency import Agency
 import agency
-from packet_types import PacketType, DataGramPacketType
+from packet_types import PacketType, DataGramPacketType, ChatMessage
 from typing import Set, Dict, Tuple
 import aiohttp
 import struct
@@ -102,6 +102,8 @@ class ServerMissionControl:
         self.buildings_by_id = None
         self.agency_default_attributes = None
         self.server_global_cash_multiplier = 1.0
+        self.game = None
+        self.game_resources = None
         with open("game_desc.json", "r") as game_description_file:
             self.game_description = json.load(game_description_file)
             self.game_buildings_list = self.game_description.get("buildings")
@@ -110,6 +112,7 @@ class ServerMissionControl:
             }
             self.buildings_by_id = {b["id"]: b for b in self.game_buildings_list}
             self.agency_default_attributes = self.game_description.get("agency_default_attributes", {})
+            self.game_resources = self.game_description.get("resources", [])
 
     def get_next_agency_id(self):
         current = self.next_available_agency_id
@@ -206,6 +209,16 @@ class ControlServer:
 
             await asyncio.sleep(1)
 
+    async def broadcast_to_agency(self, agency_id: int, data: bytes) -> int:
+        targets = [
+            s for s in self.sessions
+            if s.alive and hasattr(s, "player") and s.player
+            and getattr(s.player, "agency_id", None) == agency_id
+        ]
+        if not targets:
+            return 0
+        await asyncio.gather(*(s.send(data) for s in targets))
+        return len(targets)
 
     async def handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         session = Session(reader, writer, self)
@@ -233,6 +246,9 @@ class ControlServer:
         packet += PacketType.PLAYER_JOIN.to_bytes(2, 'little')  # 2-byte function code
         packet += steam_id.to_bytes(8, 'little')                 # 8-byte Steam ID
         await self.broadcast(packet)
+
+        chat_pkt = self._build_chat_packet(ChatMessage.PLAYERJOIN, steam_id, " has joined the game")
+        await self.broadcast(chat_pkt)
 
     async def tell_everyone_player_left(self, steam_id: int):
         packet = bytearray()
@@ -267,6 +283,15 @@ class ControlServer:
             player.session = session
 
         session.player = player
+
+    def _build_chat_packet(self, msg_type: ChatMessage, sender_steam_id: int, text: str) -> bytes:
+        pkt = bytearray()
+        pkt += PacketType.CHAT_MESSAGE_RELAY.to_bytes(2, "little")  # u16 opcode
+        pkt.append(int(msg_type))                                    # u8 chat type
+        pkt += sender_steam_id.to_bytes(8, "little")                 # u64 sender
+        pkt += text.encode("utf-8") + b"\x00"                        # NUL-terminated
+        return pkt
+
 
 
     async def tell_everyone_info_about_everyone(self): 
@@ -368,6 +393,49 @@ class ControlServer:
 
         # Send directly to the specified session
         await session.send(packet)
+
+    def build_force_resolve_packet(self, vessel):
+        """
+        Same schema as RESOLVE_VESSEL_REPLY, but with a different opcode so the
+        client knows this is a server-pushed refresh.
+        """
+        packet = bytearray()
+        packet += struct.pack('<H', PacketType.FORCE_RESOLVE_VESSEL)
+        packet += struct.pack('<Q', vessel.object_id)      # u64 vessel id
+
+        name = vessel.name
+        packet += name.encode('utf-8') + b'\x00'           # null-terminated name
+
+        components = vessel.components
+        packet += struct.pack('<H', vessel.num_stages)     # u16 num stages
+        packet += struct.pack('<H', vessel.stage)
+        packet += struct.pack('<H', len(components))       # u16 component count
+        for comp in components:
+            packet += struct.pack('<HhhHHH', comp.id, comp.x, comp.y, comp.stage, comp.paint1, comp.paint2)  # u16, i16, u16, u16, u16
+
+        return packet
+
+    async def broadcast_force_resolve(self, vessel, only_same_system=True):
+        """
+        Push a FORCE_RESOLVE to interested clients.
+        Filter to players in same galaxy/system by default to save bandwidth.
+        """
+        packet = self.build_force_resolve_packet(vessel)
+
+        if only_same_system:
+            sessions = []
+            for s in list(self.sessions):
+                if not s.alive or not hasattr(s, "player") or s.player is None:
+                    continue
+                if (s.player.galaxy, s.player.system) == (
+                        getattr(vessel.home_chunk, "galaxy", None),
+                        getattr(vessel.home_chunk, "system", None),
+                ):
+                    sessions.append(s)
+        else:
+            sessions = [s for s in self.sessions if s.alive]
+
+        await asyncio.gather(*(s.send(packet) for s in sessions))
 
 
 class StreamingServer:
@@ -545,11 +613,32 @@ class StreamingServer:
         packet += name.encode('utf-8') + b'\x00'
         components = vessel.components
         packet += struct.pack('<H', vessel.num_stages)
+        packet += struct.pack('<H', vessel.stage)
         packet += struct.pack('<H', len(components))
 
         for comp in components:
-            packet += struct.pack('<Hhh', comp.id, comp.x, comp.y)
+            packet += struct.pack('<HhhHHH', comp.id, comp.x, comp.y, comp.stage, comp.paint1, comp.paint2)
         return packet   
+
+    def build_telescope_sight_packet(self, vessel):
+        """
+        Layout:
+        u8   opcode = TELESCOPE_SIGHT
+        u64  vessel_id
+        u16  count
+        [count x u64 object_id]
+        """
+        pkt = bytearray()
+        pkt.append(DataGramPacketType.TELESCOPE_SIGHT)
+        pkt += struct.pack('<Q', vessel.object_id)
+
+        ids = [int(obj.object_id) for obj in getattr(vessel, "telescope_targets_in_sight", []) if obj is not None]
+        pkt += struct.pack('<H', len(ids))
+        for oid in ids:
+            pkt += struct.pack('<Q', oid)
+        return pkt
+
+
 
 
     def send_player_details(self):

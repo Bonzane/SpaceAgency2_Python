@@ -123,6 +123,7 @@ async def main():
     missioncontrol.global_thrust_multiplier = float(game_defaults.get("thrustmultiplier", 0.2))
     missioncontrol.tickrate = tickrate
     game = Game(game_files, tickrate, gamespeed, missioncontrol)
+    missioncontrol.game = game
 
 
 

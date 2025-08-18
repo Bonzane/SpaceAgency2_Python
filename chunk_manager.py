@@ -11,9 +11,12 @@ class ChunkManager:
         self.loaded_chunks: Dict[Tuple[int, int], Chunk] = {}
         self.tickrate = tickrate 
         self.game = game
-        self._start_threads()
         self.shared = shared
         shared.chunk_manager = self
+        self.object_id_to_chunk: Dict[int, Tuple[int, int]] = {}
+        self._lock = threading.RLock()
+
+        self._start_threads()
 
 
     def load_chunk(self, galaxy: int, system: int):
@@ -52,9 +55,10 @@ class ChunkManager:
     def _tick_loop(self):
         while True:
             start = time.time()
-            for chunk in self.loaded_chunks.values():
-                if chunk.is_ready():
-                    chunk.update_objects(self.game.simsec_per_tick)
+            with self._lock:
+                for chunk in self.loaded_chunks.values():
+                    if chunk.is_ready():
+                        chunk.update_objects(self.game.simsec_per_tick)
             elapsed = time.time() - start
             delay = max(0, 1 / self.tickrate - elapsed)
             time.sleep(delay)
@@ -62,15 +66,34 @@ class ChunkManager:
     def _autosave_loop(self):
         while True:
             time.sleep(60)  # Autosave interval
-            print("💾 Autosaving all chunks...")
+            print("💾 Autosaving all chunks + meta...")
             self.serialize_all_chunks()
+            # Ask Game to save players/agencies too (atomic JSON)
+            try:
+                self.game.save_meta()     # NEW
+            except Exception as e:
+                print(f"⚠️ Meta save failed: {e}")
+
+
 
     def serialize_all_chunks(self):
-        pass
-        # TEMPORARILY DISABLED
-        # THIS WAS NOT THE ISSUE!!
-       # for chunk in self.loaded_chunks.values():
-       #     chunk.serialize_chunk()
+        with self._lock:
+            for chunk in self.loaded_chunks.values():
+                try:
+                    chunk.serialize_chunk()
+                except Exception as e:
+                    print(f"❌ Failed to serialize chunk {chunk.galaxy, chunk.system}: {e}")
+
 
     def how_many_chunks_loaded(self) -> int:
         return len(self.loaded_chunks)
+    
+
+    def register_object(self, object_id, galaxy, system):
+        self.object_id_to_chunk[object_id] = (galaxy, system)
+
+    def get_chunk_from_object_id(self, object_id):
+        chunk_coords = self.object_id_to_chunk.get(object_id)
+        if chunk_coords is None:
+            return None
+        return self.loaded_chunks.get(chunk_coords)

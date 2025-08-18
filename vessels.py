@@ -1,3 +1,4 @@
+import asyncio
 from dataclasses import dataclass, field
 import struct
 from typing import List, Dict, Tuple, Any, Union, Optional
@@ -7,7 +8,7 @@ from enum import Enum, IntEnum
 import math
 from packet_types import DataGramPacketType
 from vessel_components import Components
-from utils import ambient_temp_simple
+from utils import ambient_temp_simple, shortest_delta_deg, wrap_deg
 
 class VesselControl(IntEnum):
     FORWARD_THRUST_ENGAGE = 0x00
@@ -20,6 +21,7 @@ class VesselControl(IntEnum):
     CW_THRUST_DISENGAGE = 0x07
     REQUEST_CONTROL = 0x08
     DEPLOY_STAGE = 0x09
+    SET_TELESCOPE_TARGET_ANGLE = 0x0A
 
 class VesselState(IntEnum):
     FORWARD_THRUSTER_ON = 0x00
@@ -33,6 +35,8 @@ class AttachedVesselComponent:
     id: int
     x: float
     y: float
+    paint1 : int
+    paint2 : int
 
 @dataclass
 class Vessel(PhysicsObject):
@@ -78,6 +82,14 @@ class Vessel(PhysicsObject):
     current_temperature_c: float = 20.0
     thermal_resistance: float = 100
     deployment_ready: bool = False
+    #---Telescopes---
+    has_telescope_rcs: bool = False
+    telescope_rcs_angle: float = 0.0
+    telescope_targets: List[GameObject] = field(default_factory=list, repr=False)
+    telescope_targets_in_sight: List[GameObject] = field(default_factory=list, repr=False)
+
+    fuel_by_stage: Dict[int, float] = field(default_factory=dict, repr=False)
+    capacity_by_stage: Dict[int, float] = field(default_factory=dict, repr=False)
 
 
 
@@ -86,34 +98,84 @@ class Vessel(PhysicsObject):
         print("VESSEL SPAWNED")
 
     def calculate_vessel_stats(self):
-        #calculate initial states
         component_data_lookup = self.shared.component_data
+
+        # recompute capacities and thrust caps per stage
+        self.capacity_by_stage.clear()
+        stage_forward = {}
+        stage_reverse = {}
+
         total_mass = 0.0
         self.dry_mass = 0.0
-        self.liquid_fuel_capacity_kg = 0.0
-        self.liquid_fuel_kg = 0.0
         weighted_x = 0.0
         weighted_y = 0.0
-        for component in self.components:
-            component_data = component_data_lookup.get(component.id, {})
-            if component_data:
-                mass = component_data.get("mass", 0)
-                attributes = component_data.get("attributes", {})
-                self.liquid_fuel_capacity_kg += attributes.get("liquid-fuel", 0)
-                self.capable_forward_thrust += attributes.get("forward-thrust", 0)
-                self.capable_reverse_thrust += attributes.get("reverse-thrust", 0)
-                total_mass += mass
-                weighted_x += component.x * mass
-                weighted_y += component.y * mass
 
-        self.liquid_fuel_kg = self.liquid_fuel_capacity_kg
-        self.mass = total_mass + self.liquid_fuel_kg
-        if total_mass > 0:
+        # if stage not yet set, infer from components
+        if not self.components:
+            self.mass = 0.0
+            self.center_of_mass = (0.0, 0.0)
+            return
+        inferred_stage = max(getattr(c, "stage", 0) for c in self.components)
+        if not isinstance(self.stage, int):
+            self.stage = inferred_stage
+        else:
+            self.stage = max(self.stage, inferred_stage) if self.stage < 0 else self.stage
+
+        for comp in self.components:
+            cd = component_data_lookup.get(comp.id, {})
+            if not cd:
+                continue
+            mass = cd.get("mass", 0.0)
+            attrs = cd.get("attributes", {})
+            st = int(getattr(comp, "stage", 0))
+
+
+            # per-stage fuel capacity
+            cap = float(attrs.get("liquid-fuel", 0.0))
+            if cap > 0:
+                self.capacity_by_stage[st] = self.capacity_by_stage.get(st, 0.0) + cap
+
+            # per-stage thrust capability
+            stage_forward[st] = stage_forward.get(st, 0.0) + float(attrs.get("forward-thrust", 0.0))
+            stage_reverse[st] = stage_reverse.get(st, 0.0) + float(attrs.get("reverse-thrust", 0.0))
+
+            total_mass += mass
+            weighted_x += comp.x * mass
+            weighted_y += comp.y * mass
+
+            if(attrs.get("telescope-rcs", False)):
+                self.has_telescope_rcs = True
+
+            if(comp.id == Components.SPACE_TELESCOPE):
+                game = self.shared.game
+                self.telescope_targets = [game.sun, game.luna, game.mars, game.venus]
+
+        # initialize fuel pools if empty (fill each stage to capacity)
+        if not self.fuel_by_stage:
+            for st, cap in self.capacity_by_stage.items():
+                self.fuel_by_stage[st] = cap
+
+        # expose "capable_*" for the current stage only (so UI/logic stays intuitive)
+        self.capable_forward_thrust = float(stage_forward.get(self.stage, 0.0))
+        self.capable_reverse_thrust = float(stage_reverse.get(self.stage, 0.0))
+
+        # mass = dry components + fuel that is still attached (stages ≤ current stage)
+        attached_fuel = sum(v for s, v in self.fuel_by_stage.items() if s <= self.stage)
+        self.mass = total_mass + attached_fuel
+
+        if total_mass > 0.0:
             self.center_of_mass = (weighted_x / total_mass, weighted_y / total_mass)
 
+        # keep the legacy flat numbers reflecting the CURRENT stage (for telemetry/packets)
+        self.liquid_fuel_capacity_kg = self._current_stage_capacity()
+        self.liquid_fuel_kg = self._current_stage_fuel()
+
+
     def calculate_mass(self, component_data_lookup: Dict[int, Dict]) -> float:
-        """Sum the mass of all components using the shared data."""
-        return sum(component_data_lookup.get(comp.id, {}).get("mass", 0) for comp in self.components) + self.liquid_fuel_kg
+        dry = sum(component_data_lookup.get(comp.id, {}).get("mass", 0.0) for comp in self.components)
+        attached_fuel = sum(v for s, v in self.fuel_by_stage.items() if s <= self.stage)
+        return dry + attached_fuel
+
 
 
 
@@ -143,6 +205,58 @@ class Vessel(PhysicsObject):
                 self.control_state[VesselState.CW_THRUST_ON] = True
             case VesselControl.CW_THRUST_DISENGAGE:
                 self.control_state[VesselState.CW_THRUST_ON] = False
+            case VesselControl.DEPLOY_STAGE:
+                self.deploy_stage()
+
+    def _current_stage_capacity(self) -> float:
+        return float(self.capacity_by_stage.get(self.stage, 0.0))
+
+    def _current_stage_fuel(self) -> float:
+        return float(self.fuel_by_stage.get(self.stage, 0.0))
+
+    def _set_current_stage_fuel(self, value: float):
+        cap = self._current_stage_capacity()
+        self.fuel_by_stage[self.stage] = max(0.0, min(value, cap))
+
+    def deploy_stage(self):
+        if self.stage <= 0:
+            print("Can not deploy - already deployed!")
+            return
+        if not self.deployment_ready:
+            print("Can not deploy - not ready!")
+            return
+
+        prev_stage = self.stage
+        self.stage -= 1
+        self.deployment_ready = False
+
+        # Remove components that no longer belong
+        self.drop_components()
+
+        self.control_state[VesselState.CCW_THRUST_ON] = False
+        self.control_state[VesselState.CW_THRUST_ON] = False
+        self.control_state[VesselState.REVERSE_THRUSTER_ON] = False
+        self.control_state[VesselState.FORWARD_THRUSTER_ON] = False
+
+        print(f"✅ Vessel {self.object_id} staged: {prev_stage} → {self.stage} (components={len(self.components)})")
+
+        tcp = self.shared.tcp_server
+        if tcp is not None:
+            asyncio.create_task(tcp.broadcast_force_resolve(self))
+
+
+    def drop_components(self):
+        kept = []
+        for comp in self.components:
+            if int(getattr(comp, "stage", 0)) <= self.stage:
+                kept.append(comp)
+        self.components = kept
+
+        # prune per-stage tanks that are no longer attached
+        self.fuel_by_stage = {s: v for s, v in self.fuel_by_stage.items() if s <= self.stage}
+        self.capacity_by_stage = {s: v for s, v in self.capacity_by_stage.items() if s <= self.stage}
+
+        self.calculate_vessel_stats()
 
 
     def do_payload_mechanics(self, dt: float):
@@ -158,6 +272,59 @@ class Vessel(PhysicsObject):
         match self.payload:
             case Components.COMMUNICATIONS_SATELLITE:
                 _payload_income_per_second += _agency.attributes.get("satellite_bonus_income", 0)
+            case Components.SPACE_TELESCOPE:
+                controlling_player_id = self.controlled_by
+                if controlling_player_id == 0:
+                    return
+                controlling_player = self.shared.players.get(controlling_player_id, None)
+                if not controlling_player:
+                    return
+                sess = getattr(controlling_player, "session", None)
+                if not sess or not sess.alive:
+                    return
+                self.telescope_targets_in_sight.clear()
+                for obj in self.telescope_targets:
+                    if obj is None:
+                        continue
+                    # Direction from vessel to target
+                    dx = obj.position[0] - self.position[0]
+                    dy = obj.position[1] - self.position[1]
+                    if dx == 0.0 and dy == 0.0:
+                        continue  # same position; undefined direction
+
+                    to_target_deg = math.degrees(math.atan2(dy, dx))
+                    # Smallest signed delta (uses your helper)
+                    delta = shortest_delta_deg(-self.rotation, to_target_deg)
+
+                    if abs(delta) < 30.0:  # strictly less than 30°
+                        self.telescope_targets_in_sight.append(obj)
+
+                if sess and sess.alive and getattr(sess, "udp_port", None):
+                    addr = (sess.remote_ip, sess.udp_port)
+                    packet = self.shared.udp_server.build_telescope_sight_packet(self)
+                    self.shared.udp_server.transport.sendto(packet, addr)
+
+
+
+        if self.has_telescope_rcs:
+            # Rotate slowly toward target angle (shortest arc), no momentum/fuel use
+            # Use the same real-time scaling you use elsewhere:
+            scaled_dt = dt / getattr(self.shared, "gamespeed", 1.0)
+
+            max_rate = 5.0  # tweakable
+            max_step = max_rate * scaled_dt  # degrees we can turn this tick
+
+            delta = shortest_delta_deg(self.rotation, self.telescope_rcs_angle)
+
+            self.rotation_velocity = 0.0
+
+            if abs(delta) <= max_step:
+                # Snap when close enough
+                self.rotation = wrap_deg(self.rotation + delta)
+            else:
+                # Step toward target by max_step in the correct direction
+                self.rotation = wrap_deg(self.rotation + (max_step if delta > 0.0 else -max_step))
+
 
         #Give income to the agency
         _agency.distribute_money(_payload_income_per_second / _tickrate)
@@ -402,120 +569,166 @@ class Vessel(PhysicsObject):
         self.altitude = 0.1  # start just above the ground
 
 
+    def _nozzle_local_point(self, component, pt):
+        """Convert authored nozzle offset (screen Y-down) to physics local (Y-up)."""
+        if isinstance(pt, (list, tuple)) and len(pt) >= 2:
+            px = float(pt[0])
+            py = float(pt[1])
+            return (component.x + px, component.y - py)  # <-- flip Y
+        return (component.x, component.y)
+
+    def _burn_fuel(self, kg: float) -> bool:
+        cur = self._current_stage_fuel()
+        if kg <= 0 or cur < kg:
+            return False
+        self._set_current_stage_fuel(cur - kg)
+        self.liquid_fuel_kg = self._current_stage_fuel()
+        self.mass = self.calculate_mass(self.shared.component_data)
+        return True
 
     def apply_forward_thrust(self, dt: float):
         total_kN = 0.0
         mult = getattr(self.shared, "global_thrust_multiplier", 1.0)
 
         for component in self.components:
-            cd = self.shared.component_data.get(component.id, {})
-            if not cd:
+            if getattr(component, "stage", 0) != self.stage:
+                continue
+            cd = self.shared.component_data.get(component.id, {}) or {}
+            attrs = cd.get("attributes", {}) or {}
+
+            kN = float(attrs.get("forward-thrust", 0.0))
+            if kN <= 0.0:
                 continue
 
-            kN = cd.get("attributes", {}).get("forward-thrust", 0.0)
-            if kN <= 0:
-                continue
-
-            fuelConsumption = cd.get("attributes", {}).get("forward-fuel-consumption", 0.0) * 0.003
+            fuelConsumption = float(attrs.get("forward-fuel-consumption", 0.0)) * 0.003
             if fuelConsumption > 0.0:
                 fuel_needed = fuelConsumption * dt
-                if self.liquid_fuel_kg >= fuel_needed:
-                    self.liquid_fuel_kg -= fuel_needed
-                    heat = cd.get("attributes", {}).get("forward-fire-heat", 1.0) * 0.001
+                if self._burn_fuel(fuel_needed):
+                    heat = float(attrs.get("forward-fire-heat", 1.0)) * 0.001
                     self.current_temperature_c += heat * dt
                 else:
                     kN = 0.0
                     self.control_state[VesselState.FORWARD_THRUSTER_ON] = False
 
-            
+            pt = attrs.get("forward-fire-output-point")
+            local_point = self._nozzle_local_point(component, pt)
 
-            total_kN += kN * mult  # accumulate effective forward thrust
-
-            local_point = (component.x, component.y)
-            self.apply_thrust_at(local_point, direction_angle_deg=-90, thrust_kN=kN, dt=dt)
+            eff_kN = kN * mult
+            if eff_kN > 0.0:
+                # Asset forward is -Y → -90°
+                self.apply_thrust_at(local_point, direction_angle_deg=-90, thrust_kN=eff_kN, dt=dt)
+                total_kN += eff_kN
 
         self.last_forward_thrust_kN += total_kN
 
-                
-
 
     def apply_ccw_thrust(self, dt: float):
-        for component in self.components:
-            component_data = self.shared.component_data.get(component.id, {})
-            if not component_data:
-                continue
-            thrust_kN = component_data.get("attributes", {}).get("ccw-thrust", 0) * 0.1
-            thrust_direction = component_data.get("attributes", {}).get("ccw-thrust-direction", 0) 
+        mult = getattr(self.shared, "global_thrust_multiplier", 1.0)
+        attn = getattr(self.shared, "attitude_thrust_scale", 0.1)
 
-            fuelConsumption = component_data.get("attributes", {}).get("ccw-fuel-consumption", 0.0) * 0.003
+        for component in self.components:
+            if getattr(component, "stage", 0) != self.stage:
+                continue
+            cd = self.shared.component_data.get(component.id, {}) or {}
+            attrs = cd.get("attributes", {}) or {}
+
+            base_kN   = float(attrs.get("ccw-thrust", 0.0))
+            thrust_kN = base_kN * attn
+            thrust_dir = float(attrs.get("ccw-thrust-direction", 0.0))
+
+            fuelConsumption = float(attrs.get("ccw-fuel-consumption", 0.0)) * 0.003
             if fuelConsumption > 0.0:
                 fuel_needed = fuelConsumption * dt
-                if self.liquid_fuel_kg >= fuel_needed:
-                    self.liquid_fuel_kg -= fuel_needed
-                    heat = component_data.get("attributes", {}).get("ccw-fire-heat", 1.0) * 0.001
+                if self._burn_fuel(fuel_needed):
+                    heat = float(attrs.get("ccw-fire-heat", 1.0)) * 0.001
                     self.current_temperature_c += heat * dt
                 else:
                     thrust_kN = 0.0
                     self.control_state[VesselState.CCW_THRUST_ON] = False
 
+            if thrust_kN <= 0.0:
+                continue
 
+            pt = attrs.get("ccw-fire-output-point")
+            local_point = self._nozzle_local_point(component, pt)
 
-            if thrust_kN > 0:
-                local_point = (component.x, component.y)
-                # Asset forward is -Y, world forward is +X, so compensate with -90°
-                self.apply_thrust_at(local_point, direction_angle_deg=-90 + thrust_direction, thrust_kN=thrust_kN, dt=dt)
+            self.apply_thrust_at(local_point,
+                                direction_angle_deg=-90 + thrust_dir,
+                                thrust_kN=thrust_kN * mult,
+                                dt=dt)
 
     def apply_cw_thrust(self, dt: float):
-        for component in self.components:
-            component_data = self.shared.component_data.get(component.id, {})
-            if not component_data:
-                continue
-            thrust_kN = component_data.get("attributes", {}).get("cw-thrust", 0) * 0.1
-            thrust_direction = component_data.get("attributes", {}).get("cw-thrust-direction", 0)
+        mult = getattr(self.shared, "global_thrust_multiplier", 1.0)
+        attn = getattr(self.shared, "attitude_thrust_scale", 0.1)
 
-            fuelConsumption = component_data.get("attributes", {}).get("cw-fuel-consumption", 0.0) * 0.003
+        for component in self.components:
+            if getattr(component, "stage", 0) != self.stage:
+                continue
+            cd = self.shared.component_data.get(component.id, {}) or {}
+            attrs = cd.get("attributes", {}) or {}
+
+            base_kN   = float(attrs.get("cw-thrust", 0.0))
+            thrust_kN = base_kN * attn
+            thrust_dir = float(attrs.get("cw-thrust-direction", 0.0))
+
+            fuelConsumption = float(attrs.get("cw-fuel-consumption", 0.0)) * 0.003
             if fuelConsumption > 0.0:
                 fuel_needed = fuelConsumption * dt
-                if self.liquid_fuel_kg >= fuel_needed:
-                    self.liquid_fuel_kg -= fuel_needed
-                    heat = component_data.get("attributes", {}).get("cw-fire-heat", 1.0) * 0.001
+                if self._burn_fuel(fuel_needed):
+                    heat = float(attrs.get("cw-fire-heat", 1.0)) * 0.001
                     self.current_temperature_c += heat * dt
                 else:
                     thrust_kN = 0.0
                     self.control_state[VesselState.CW_THRUST_ON] = False
 
-            
+            if thrust_kN <= 0.0:
+                continue
 
-            if thrust_kN > 0:
-                local_point = (component.x, component.y)
-                # Asset forward is -Y, world forward is +X, so compensate with -90°
-                self.apply_thrust_at(local_point, direction_angle_deg=-90 + thrust_direction, thrust_kN=thrust_kN, dt=dt)
+            pt = attrs.get("cw-fire-output-point")
+            local_point = self._nozzle_local_point(component, pt)
+
+            self.apply_thrust_at(local_point,
+                                direction_angle_deg=-90 + thrust_dir,
+                                thrust_kN=thrust_kN * mult,
+                                dt=dt)
+
 
     def apply_reverse_thrust(self, dt: float):
-        for component in self.components:
-            component_data = self.shared.component_data.get(component.id, {})
-            if not component_data:
-                continue
-            thrust_kN = component_data.get("attributes", {}).get("reverse-thrust", 0)
-            thrust_direction = component_data.get("attributes", {}).get("reverse-thrust-direction", 0) + 180
+        mult = getattr(self.shared, "global_thrust_multiplier", 1.0)
 
-            fuelConsumption = component_data.get("attributes", {}).get("reverse-fuel-consumption", 0.0) * 0.003
+        for component in self.components:
+            if getattr(component, "stage", 0) != self.stage:
+                continue
+            cd = self.shared.component_data.get(component.id, {}) or {}
+            attrs = cd.get("attributes", {}) or {}
+
+            thrust_kN = float(attrs.get("reverse-thrust", 0.0))
+            if thrust_kN <= 0.0:
+                continue
+
+            fuelConsumption = float(attrs.get("reverse-fuel-consumption", 0.0)) * 0.003
             if fuelConsumption > 0.0:
                 fuel_needed = fuelConsumption * dt
-                if self.liquid_fuel_kg >= fuel_needed:
-                    self.liquid_fuel_kg -= fuel_needed
-                    heat = component_data.get("attributes", {}).get("reverse-fire-heat", 1.0) * 0.001
+                if self._burn_fuel(fuel_needed):
+                    heat = float(attrs.get("reverse-fire-heat", 1.0)) * 0.001
                     self.current_temperature_c += heat * dt
                 else:
                     thrust_kN = 0.0
                     self.control_state[VesselState.REVERSE_THRUSTER_ON] = False
 
+            if thrust_kN <= 0.0:
+                continue
+
+            pt = attrs.get("reverse-fire-output-point")
+            local_point = self._nozzle_local_point(component, pt)
+
+            thrust_dir = float(attrs.get("reverse-thrust-direction", 0.0)) + 180.0
+            self.apply_thrust_at(local_point,
+                                direction_angle_deg=-90 + thrust_dir,
+                                thrust_kN=thrust_kN * mult,
+                                dt=dt)
 
 
-            if thrust_kN > 0:
-                local_point = (component.x, component.y)
-                # Asset forward is -Y, world forward is +X, so compensate with -90°
-                self.apply_thrust_at(local_point, direction_angle_deg=-90 + thrust_direction, thrust_kN=thrust_kN, dt=dt)
 
 
     def apply_thrust_at(self, local_point: Tuple[float, float], direction_angle_deg: float, thrust_kN: float, dt: float):
@@ -606,27 +819,19 @@ from collections import deque
 
 def calculate_component_stages(components, connections, component_data_lookup, payload_index=None):
     """
-    Calculates stage numbers for components based on connections.
-
-    Rules for now:
-      - payload = stage 0
-      - all connected components = stage 1 (no couplers yet)
-    Future:
-      - couplers will add +1 stage when traversed
-
-    Args:
-        components: list of AttachedVesselComponent
-        connections: list of [child_idx, parent_idx]
-        component_data_lookup: dict of component definitions
-        payload_index: optional index of payload component
-
-    Returns:
-        list[int]: stage per component index
+    Stage assignment:
+      - Start at payload = stage 0.
+      - When traversing from a node to a neighbor, the neighbor's stage is:
+            neighbor_stage = current_stage + neighbor_attrs.get("stage-add", 0)
+        i.e., entering a separator bumps the stage for the separator itself and everything after it.
+      - If multiple paths reach a node, keep the highest stage discovered (so any path that crosses
+        a separator will raise the node's final stage).
+      - Any completely disconnected parts default to stage 1.
     """
     n = len(components)
     stages = [-1] * n  # -1 means unvisited
 
-    # Pick payload index
+    # Find payload index if not provided
     if payload_index is None:
         for i, comp in enumerate(components):
             cd = component_data_lookup.get(comp.id, {})
@@ -637,13 +842,15 @@ def calculate_component_stages(components, connections, component_data_lookup, p
         if payload_index is None:
             payload_index = 0  # fallback
 
-    # Build adjacency list
+    # Build adjacency
     adj = [[] for _ in range(n)]
     for a, b in connections:
-        adj[a].append(b)
-        adj[b].append(a)
+        a = int(a); b = int(b)
+        if 0 <= a < n and 0 <= b < n:
+            adj[a].append(b)
+            adj[b].append(a)
 
-    # BFS
+    # BFS from payload
     queue = deque()
     stages[payload_index] = 0
     queue.append(payload_index)
@@ -652,22 +859,24 @@ def calculate_component_stages(components, connections, component_data_lookup, p
         cur = queue.popleft()
         cur_stage = stages[cur]
 
-        for neighbor in adj[cur]:
-            if stages[neighbor] == -1:
-                # TODO: future: if components[neighbor] is coupler, stage = cur_stage + 1
-                if cur_stage == 0:
-                    stages[neighbor] = 1
-                else:
-                    stages[neighbor] = cur_stage  # no couplers yet, so same stage as parent
-                queue.append(neighbor)
+        for nb in adj[cur]:
+            # Stage bump is applied when ENTERING the neighbor
+            nb_data = component_data_lookup.get(components[nb].id, {}) or {}
+            nb_attrs = nb_data.get("attributes", {}) or {}
+            bump = int(nb_attrs.get("stage-add", 0))  # e.g., separator = 1, others = 0
+            cand_stage = cur_stage + bump
 
-    # Fill any unconnected parts with stage 1
+            # If unseen or we discovered a higher stage via another path, update
+            if stages[nb] == -1 or cand_stage > stages[nb]:
+                stages[nb] = cand_stage
+                queue.append(nb)
+
+    # Any unconnected bits default to stage 1 (legacy behavior)
     for i in range(n):
         if stages[i] == -1:
             stages[i] = 1
 
     return stages
-
 
 
 def construct_vessel_from_request(shared, player, vessel_request_data) -> Vessel:
@@ -683,21 +892,23 @@ def construct_vessel_from_request(shared, player, vessel_request_data) -> Vessel
     vessel_name = vessel_request_data.get("name", "Unnamed Vessel")
     connections = [(int(a), int(b)) for a, b in vessel_request_data.get("connections", [])]
     payload_idx = None
+
     highest_stage = 0
 
-
-    #TODO: CALCULATE THE STAGE OF EACH COMPONENT TOO
     for component in vessel_request_data["vessel_data"]:
         comp_id = int(component["id"])
         placement_x = int(component["x"]) - 2500
         placement_y = int(component["y"])  - 2500 
+        _paint_1 = int(component.get("paint_1") or 0)
+        _paint_2 = int(component.get("paint_2") or 0)
         
         component_definition = component_data_lookup.get(comp_id)
         if component_definition is None:
             raise ValueError(f"Invalid component ID: {comp_id}")
         
         total_cost += component_definition.get("cost", 0)
-        components.append(AttachedVesselComponent(id=comp_id, x=placement_x, y=placement_y))
+        components.append(AttachedVesselComponent(id=comp_id, x=placement_x, y=placement_y, paint1=_paint_1, paint2=_paint_2))
+        
     if player.money < total_cost:
         raise ValueError(f"Insufficient funds: cost={total_cost}, player has={player.money}")
     
@@ -705,7 +916,7 @@ def construct_vessel_from_request(shared, player, vessel_request_data) -> Vessel
     player.money -= total_cost
     print("Creating vessel")
 
-
+    payload_idx = detect_payload_index(components, component_data_lookup)
     stages = calculate_component_stages(components, connections, component_data_lookup, payload_idx)
     #Create the vessel
     for comp, st in zip(components, stages):
@@ -725,6 +936,7 @@ def construct_vessel_from_request(shared, player, vessel_request_data) -> Vessel
     vessel.name = vessel_name
     vessel.launchpad_planet_id = planet_id
     vessel.stage, vessel.num_stages = max(stages), max(stages) + 1
+    vessel.payload = components[payload_idx].id
 
     # Add vessel to its agency
     agency = shared.agencies.get(player.agency_id)
@@ -765,3 +977,15 @@ def construct_vessel_from_request(shared, player, vessel_request_data) -> Vessel
 
 
     return vessel
+
+def detect_payload_index(components, component_data_lookup):
+    """
+    Finds the index of the payload component by looking for 'is-payload' == truthy
+    in the component's attributes.
+    """
+    for i, comp in enumerate(components):
+        comp_data = component_data_lookup.get(comp.id, {})
+        attrs = comp_data.get("attributes", {})
+        if attrs.get("is-payload"):  # Any truthy value counts
+            return i
+    return None

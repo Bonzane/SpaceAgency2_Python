@@ -38,6 +38,7 @@ class Chunk:
     def add_object(self, obj: GameObject):
         self.objects.append(obj)
         self.id_to_object[obj.object_id] = obj
+        self.manager.register_object(obj.object_id, self.galaxy, self.system)
 
     def signed_to_unsigned64(self, value: int) -> int:
         return value % (1 << 64)
@@ -212,9 +213,9 @@ class Chunk:
 
         try:
             with open(self.path, 'rb') as f:
-                self.objects = pickle.load(f)
-                self.id_to_object = {obj.object_id: obj for obj in self.objects}
-                print(f"✅ Loaded {len(self.objects)} objects from {self.path}")
+                objs = pickle.load(f)
+                for obj in objs:
+                    self.add_object(obj)
         except Exception as e:
             print(f"❌ Failed to load chunk: {e}")
             self.objects = []

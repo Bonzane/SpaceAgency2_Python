@@ -31,3 +31,17 @@ def ambient_temp_simple(distance_km: float) -> float:
     heat_at_1Mkm = 3_300  # tuned so Mercury ~ 440K
     dist_units = max(distance_km / scale_distance, 1.0)
     return base_temp + heat_at_1Mkm / (dist_units ** 0.5)
+
+
+def wrap_deg(a: float) -> float:
+    """0..360 wrap."""
+    return (a % 360.0 + 360.0) % 360.0
+
+def shortest_delta_deg(current: float, target: float) -> float:
+    """
+    Signed shortest delta (target - current) in degrees, in [-180, 180].
+    """
+    c = wrap_deg(current)
+    t = wrap_deg(target)
+    d = ((t - c + 180.0) % 360.0) - 180.0
+    return d

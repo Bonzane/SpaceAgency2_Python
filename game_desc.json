@@ -10,23 +10,27 @@
             "description" : "This building represents your agency's base on Earth. A great home base!",
             "upgrade_costs" : {
                 "2" : 50000,
-                "3" : 100000
+                "3" : 100000,
+                "4" : 200000
             },
             "attributes" : {
                 "base_income" : 200,
                 "buildinglevel_unlocks" : {
                     "1" : {
-                        "unlock_buildings" : [1, 2, 3],
-                        "unlock_components" : [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
-                        "add_base_income" : 100
+                        "unlock_buildings" : [1, 2],
+                        "unlock_components" : [1, 2, 3, 4, 5, 6]
                     }, 
                     "2" : {
-                        "unlock_buildings" : [4],
-                        "add_base_income" : 100
+                        "unlock_buildings" : [3, 4, 5],
+                        "unlock_components" : [7, 8, 9, 10, 12, 13]
                     },
                     "3" : {
-                        "unlock_buildings" : [5],
-                        "add_base_income" : 100
+                        "unlock_buildings" : [6],
+                        "add_base_income" : 200
+                    },
+                    "4" : {
+                        "add_base_income" : 300,
+                        "unlock_components" : [14, 15, 16]
                     }
                 }
             }
@@ -54,10 +58,12 @@
             "attributes" : {
                 "buildinglevel_unlocks" : {
                     "1" : {
-                        "add_satellite_income" : 100
+                        "add_satellite_income" : 100,
+                        "satellite_max_upgrade_tier" : 2
                     },
                     "2" : {
-                        "add_satellite_income" : 200
+                        "add_satellite_income" : 200,
+                        "satellite_max_upgrade_tier" : 3
                     }
 
                 }
@@ -67,7 +73,7 @@
             "id" : 4,
             "name" : "Storage Facility", 
             "cost" : 50000, 
-            "build_time" : 60,
+            "build_time" : 6,
             "upgrade_costs" : {},
             "description" : "The Storage Facility allows the planet to hold more resources, which can be used to construct more advanced components.",
             "attributes" : {
@@ -82,29 +88,91 @@
             "id" : 5,
             "name" : "Mining Rig", 
             "cost" : 100000, 
-            "build_time" : 120,
-            "upgrade_costs" : {},
+            "build_time" : 12,
+            "upgrade_costs" : {
+                "2" : 100000,
+                "3" : 200000,
+                "4" : 500000,
+                "5" : 1000000      
+            },
             "description" : "The mining rig collects resources from the planet it is placed on.",
             "attributes" : {
                 "buildinglevel_unlocks" : {
                     "1" : {
                         "mining_efficiency" : 100
+                    },
+                    "2" : {
+                        "mining_efficiency" : 200
+                    },
+                    "3" : {
+                        "mining_efficiency" : 300
+                    },
+                    "4" : {
+                        "mining_efficiency" : 400
+                    },
+                    "5" : {
+                        "mining_efficiency" : 500
                     }
                 }
             }
-        }    
+        },
+        {
+            "id" : 6,
+            "name" : "Reception Dish", 
+            "cost" : 100000, 
+            "build_time" : 12,
+            "upgrade_costs" : {},
+            "description" : "Unlocks Probes and probe upgrades",
+            "attributes" : {
+                "buildinglevel_unlocks" : {
+                    "1" : {
+                        "unlock_components" : [11]
+                    }
+                }
+            }
+        }        
 
 
     ],
+    "resources" : [
+        ["Nothing", 0],
+        ["Metal", 100],
+        ["Oil",300],
+        ["Uranium",5000],
+        ["Polymer",100],
+        ["Silicon",1000],
+        ["Aerogel",10000],
+        ["Water",10],
+        ["Berillyium",500],
+        ["Plutonium",200000],
+        ["Gold", 10000],
+        ["Exotic Ice", 5000],
+        ["Diamond", 10000],
+        ["Xenon", 5000],
+        ["Anti-Hydrogen", 1000000000000],
+        ["Moon Rock", 100000],
+        ["Obsidian Shard", 1000],
+        ["Alien Artifact", 100000000],
+        ["Metallic Hydrogen", 1000000], 
+        ["Tuna Cassarole", 1000000000000000],
+        ["Debris", 20],
+        ["Carbon Fiber", 300],
+        ["Meshuggatron", 1000000000000000],
+        ["Dark Matter", 1000000000000],
+        ["Quantum Dust", 1000000000000],
+        ["Nebula Gas", 1000000000],
+        ["Oort Ice", 1000000]
+    ],
     "planet_to_buildings"   :
     {
-        "Earth" : [1, 2, 3, 4, 5]
+        "Earth" : [1, 2, 3, 4, 5, 6]
     }, 
 
     "agency_default_attributes" : {
         "global_cash_multiplier" : 1.0,
         "global_build_time_multiplier" : 1.0, 
-        "satellite_bonus_income" : 0
+        "satellite_bonus_income" : 0,
+        "satellite_max_upgrade_tier" : 1
     }, 
     "components" : [
         {
@@ -112,7 +180,7 @@
             "category" : "hull",
             "name" : "Standard Hull", 
             "cost" : 30000,
-            "mass" : 600,
+            "mass" : 700,
             "attributes" : {
                 "liquid-fuel" : 1250
             }, 
@@ -174,10 +242,10 @@
             "category" : "payload",
             "name" : "Communication Satellite", 
             "cost" : 20000,
-            "mass" : 100,
+            "mass" : 150,
             "attributes" : {
                 "is-payload" : 1,
-                "payload-base-income" : 350
+                "payload_base_income" : 350
             }, 
             "snap_points" : [
                 {
@@ -374,7 +442,227 @@
                     "snaps_provided" : ["fuel-receive"]
                 }
             ]
-        }                    
+        } , 
+        {
+            "id" : 11,
+            "category" : "payload",
+            "name" : "Probe", 
+            "cost" : 90000,
+            "mass" : 220,
+            "attributes" : {
+                "is-payload" : 1,
+                "payload_base_income" : 500, 
+                "liquid-fuel" : 1000,
+                "forward-thrust" : 5,
+                "forward-fuel-consumption" : 4,
+                "forward-fire-output-point" : [0, 104],
+                "forward-fire-appearance" : 4,
+                "forward-ignition-sound" : 1,
+                "forward-thrust-sound" : 1,
+                "ccw-thrust" : 5,
+                "ccw-fuel-consumption" : 5,
+                "ccw-fire-output-point" : [-15, 134],
+                "ccw-fire-appearance" : 4,
+                "ccw-ignition-sound" : 1,
+                "ccw-thrust-sound" : 1,
+                "ccw-thrust-direction" : 85, 
+                "ccw-fire-angle-offset" : -55, 
+                "cw-thrust" : 5,
+                "cw-fuel-consumption" : 5,
+                "cw-fire-output-point" : [15, 134],
+                "cw-fire-appearance" : 4,
+                "cw-ignition-sound" : 1,
+                "cw-thrust-sound" : 1,
+                "cw-thrust-direction" : -85, 
+                "cw-fire-angle-offset" : 55,
+                "forward-fire-heat" : 2,
+                "ccw-fire-heat" : 2,
+                "cw-fire-heat" : 2
+
+            }, 
+            "snap_points" : [
+                {
+                    "x" : 0,
+                    "y" : 0,
+                    "snaps_accepted" : ["payload-receive"],
+                    "snaps_provided" : ["payload-give"]
+                }
+            ]
+
+        } , 
+        {
+            "id" : 12,
+            "category" : "payload",
+            "name" : "FLDSMDFR", 
+            "cost" : 1000000000,
+            "mass" : 150,
+            "attributes" : {
+                "is-payload" : 1,
+                "payload_base_income" : 1000000, 
+                "liquid-fuel" : 2000,
+                "forward-thrust" : 15,
+                "forward-fuel-consumption" : 4,
+                "forward-fire-output-point" : [0, 104],
+                "forward-fire-appearance" : 4,
+                "forward-ignition-sound" : 1,
+                "forward-thrust-sound" : 1,
+                "ccw-thrust" : 15,
+                "ccw-fuel-consumption" : 5,
+                "ccw-fire-output-point" : [-15, 134],
+                "ccw-fire-appearance" : 4,
+                "ccw-ignition-sound" : 1,
+                "ccw-thrust-sound" : 1,
+                "ccw-thrust-direction" : 85, 
+                "ccw-fire-angle-offset" : -55, 
+                "cw-thrust" : 15,
+                "cw-fuel-consumption" : 5,
+                "cw-fire-output-point" : [15, 134],
+                "cw-fire-appearance" : 4,
+                "cw-ignition-sound" : 1,
+                "cw-thrust-sound" : 1,
+                "cw-thrust-direction" : -85, 
+                "cw-fire-angle-offset" : 55,
+                "forward-fire-heat" : 2,
+                "ccw-fire-heat" : 2,
+                "cw-fire-heat" : 2,
+                "reverse-thrust" : 15,
+                "reverse-fuel-consumption" : 4,
+                "reverse-fire-output-point" : [0, 104],
+                "reverse-fire-appearance" : 4,
+                "reverse-ignition-sound" : 1,
+                "reverse-thrust-sound" : 1
+
+            }, 
+            "snap_points" : [
+                {
+                    "x" : 0,
+                    "y" : 0,
+                    "snaps_accepted" : ["payload-receive"],
+                    "snaps_provided" : ["payload-give"]
+                }
+            ]
+
+        }, 
+        {
+            "id" : 13,
+            "category" : "payload",
+            "name" : "Space Telescope", 
+            "cost" : 25000,
+            "mass" : 300,
+            "attributes" : {
+                "is-payload" : 1,
+                "payload_base_income" : 450,
+                "telescope-rcs" : 1
+            }, 
+            "snap_points" : [
+                {
+                    "x" : 0,
+                    "y" : 0,
+                    "snaps_accepted" : ["payload-receive"],
+                    "snaps_provided" : ["payload-give"]
+                }
+            ]
+
+        } , 
+        {
+            "id" : 14,
+            "category" : "hull",
+            "name" : "Light Hull", 
+            "cost" : 20000,
+            "mass" : 470,
+            "attributes" : {
+                "liquid-fuel" : 950
+            }, 
+            "snap_points" : [
+                {
+                    "x" : 0,
+                    "y" : -128,
+                    "snaps_accepted" : ["fuel-give", "fairing-give"], 
+                    "snaps_provided" : ["fairing-receive", "fuel-receive"]
+                }, 
+                {
+                    "x" : 0,
+                    "y" : 128,
+                    "snaps_accepted" : ["fuel-receive"], 
+                    "snaps_provided" : ["fuel-give"]
+                }
+            ]
+
+        }, 
+        {
+            "id" : 15,
+            "category" : "hull",
+            "name" : "Heavy Hull", 
+            "cost" : 40000,
+            "mass" : 960,
+            "attributes" : {
+                "liquid-fuel" : 2200
+            }, 
+            "snap_points" : [
+                {
+                    "x" : 0,
+                    "y" : -128,
+                    "snaps_accepted" : ["fuel-give", "fairing-give"], 
+                    "snaps_provided" : ["fairing-receive", "fuel-receive"]
+                }, 
+                {
+                    "x" : 0,
+                    "y" : 128,
+                    "snaps_accepted" : ["fuel-receive"], 
+                    "snaps_provided" : ["fuel-give"]
+                }, 
+                {
+                    "x" : -75,
+                    "y" : 44,
+                    "snaps_accepted" : ["attachment-left-give"], 
+                    "snaps_provided" : ["attachment-left-receive"]
+                }, 
+                {
+                    "x" : 75,
+                    "y" : 44,
+                    "snaps_accepted" : ["attachment-right-give"], 
+                    "snaps_provided" : ["attachment-right-receive"]
+                }, 
+                {
+                    "x" : -75,
+                    "y" : -104,
+                    "snaps_accepted" : ["attachment-left-give"], 
+                    "snaps_provided" : ["attachment-left-receive"]
+                }, 
+                {
+                    "x" : 75,
+                    "y" : -104,
+                    "snaps_accepted" : ["attachment-right-give"], 
+                    "snaps_provided" : ["attachment-right-receive"]
+                }
+            ]
+
+        }, 
+        {
+            "id" : 16,
+            "category" : "hull",
+            "name" : "Vertical Stage Seperator", 
+            "cost" : 10000,
+            "mass" : 50,
+            "attributes" : {
+                "stage-add" : 1
+            }, 
+            "snap_points" : [
+                {
+                    "x" : 0,
+                    "y" : -32,
+                    "snaps_accepted" : ["fuel-give"], 
+                    "snaps_provided" : ["fuel-receive"]
+                }, 
+                {
+                    "x" : 0,
+                    "y" : 32,
+                    "snaps_accepted" : ["fuel-receive"], 
+                    "snaps_provided" : ["fuel-give"]
+                }
+            ]
+
+        }                                          
     ]
         
 }
