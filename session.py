@@ -184,27 +184,69 @@ class Session:
                 print(f"   - Planet Object ID: {object_id}")
                 print(f"   - Building Type: {building_type}")
                 print(f"   - Position Angle: {position_angle}")
+
                 player = self.control_server.get_player_by_steamid(self.steam_id)
                 if player is None or player.agency_id not in self.control_server.shared.agencies:
                     print("⚠️ Invalid player or agency")
-                    return   
+                    # notify just the requester (failure)
+                    shared = getattr(player, "shared", None) or self.control_server.shared
+                    if shared and shared.udp_server:
+                        await shared.udp_server.notify_steam_ids([getattr(player, "steamID", self.steam_id)], 1,
+                            "Construction failed: invalid player/agency")
+                    return
+
                 agency = self.control_server.shared.agencies[player.agency_id]
-                building_data = self.control_server.shared.buildings_by_id.get(building_type)
+                shared = getattr(player, "shared", None) or self.control_server.shared
+                udp = getattr(shared, "udp_server", None)
+
+                building_data = shared.buildings_by_id.get(building_type)
                 if not building_data:
                     print(f"❌ Invalid building type: {building_type}")
+                    if udp:
+                        await udp.notify_steam_ids([getattr(player, "steamID", self.steam_id)], 1,
+                            f"Construction failed: invalid building type {building_type}")
                     return
 
                 cost = building_data.get("cost", 0)
                 if player.money < cost:
                     print(f"❌ Player {self.steam_id} cannot afford building (needs {cost}, has {player.money})")
-                    return 
+                    if udp:
+                        await udp.notify_steam_ids([getattr(player, "steamID", self.steam_id)], 1,
+                            f"Construction failed: need {cost}, have {player.money}")
+                    return
+
+                # Deduct and build
                 player.money -= cost
-                new_building = Building(building_type, self.control_server.shared, position_angle, object_id, agency)
+                new_building = Building(building_type, shared, position_angle, object_id, agency)
                 agency.add_building_to_base(object_id, new_building)
 
-        
+                # Success notification to the entire agency (kind 2)
+                if udp:
+                    bname = shared.buildings_by_id.get(building_type, {}).get("name", f"Building {building_type}")
+
+                    # Optional: try planet name via ChunkManager
+                    planet_name = None
+                    cm = getattr(shared, "chunk_manager", None)
+                    if cm:
+                        chunk = cm.get_chunk_from_object_id(object_id)
+                        if chunk:
+                            planet_obj = chunk.get_object_by_id(object_id)
+                            planet_name = getattr(planet_obj, "name", None)
+
+                    where = f" on {planet_name}" if planet_name else f" on planet {object_id}"
+                    await udp.notify_agency(agency.id64, 2, f"{agency.name} started construction of {bname}{where}")
+
             except Exception as e:
-                print(f"❌ Session Failed to process CONSTRUCT_BUILDING: {e}")           
+                print(f"❌ Session Failed to process CONSTRUCT_BUILDING: {e}")
+                # Best-effort failure notice to requester
+                try:
+                    shared = getattr(player, "shared", None) or self.control_server.shared
+                    if shared and shared.udp_server:
+                        await shared.udp_server.notify_steam_ids([getattr(player, "steamID", self.steam_id)], 1,
+                            "Construction failed.")
+                except Exception:
+                    pass
+            
 
 
         elif function_code == PacketType.CONSTRUCT_VESSEL:
@@ -269,7 +311,10 @@ class Session:
                         angle_value = struct.unpack('<f', angle)[0]
                         print(f"Set telescope rcs angle to {angle_value}")
                         vessel.telescope_rcs_angle = angle_value
-                
+                    elif( control_key == VesselControl.SET_SYSTEM_STATE):
+                        system_id = struct.unpack('<H', await self.reader.readexactly(2))[0]
+                        newstate = struct.unpack('<B', await self.reader.readexactly(1))[0]
+                        vessel.set_system_state(system_id, newstate)
 
         
         elif function_code == PacketType.UPGRADE_BUILDING:
@@ -284,13 +329,68 @@ class Session:
             ok, reason, cost, new_level = agency.try_upgrade_building(player, planet_id, building_type, to_level)
             if ok:
                 print(f"✅ Upgraded building {building_type} on planet {planet_id} "
-                    f"from L? to L{new_level} for {cost}. Player now has {player.money}.")
+                      f"from L? to L{new_level} for {cost}. Player now has {player.money}.")
+
+                # --- FIX: get shared robustly (player.shared first, then control_server.shared) ---
+                shared = getattr(player, "shared", None)
+                if shared is None:
+                    cs = getattr(self, "control_server", None)
+                    shared = getattr(cs, "shared", None) if cs else None
+
+                if shared and getattr(shared, "udp_server", None):
+                    udp = shared.udp_server
+
+                    # Building name (from game_desc)
+                    bdef = shared.buildings_by_id.get(building_type, {}) if getattr(shared, "buildings_by_id", None) else {}
+                    bname = bdef.get("name", f"Building {building_type}")
+
+                    # Planet name via ChunkManager (object -> chunk)
+                    planet_name = None
+                    cm = getattr(shared, "chunk_manager", None)
+                    if cm:
+                        chunk = cm.get_chunk_from_object_id(planet_id)
+                        if chunk:
+                            planet_obj = chunk.get_object_by_id(planet_id)
+                            planet_name = getattr(planet_obj, "name", None)
+
+                    where = f" on {planet_name}" if planet_name else f" on planet {planet_id}"
+                    msg = f"Upgraded {bname} to level {new_level}{where}"
+
+                    # Send to all members of the agency (notif kind 2 = success)
+                    try:
+                        await udp.notify_agency(agency.id64, 2, msg)
+                        # or fire-and-forget to avoid awaiting in the handler:
+                        # asyncio.create_task(udp.notify_agency(agency.id64, 2, msg))
+                    except Exception as e:
+                        print(f"⚠️ notify_agency failed: {e}")
+                else:
+                    print("⚠️ shared or udp_server missing; skip agency notification.")
+
             else:
                 print(f"❌ Upgrade failed ({reason}). Needed {cost}, player has {player.money}.")
+                # Optional: notify just the requester (kind 1 = failure)
+                # shared = getattr(player, "shared", None) or getattr(self.control_server, "shared", None)
+                # if shared and getattr(shared, "udp_server", None):
+                #     try:
+                #         await shared.udp_server.notify_steam_ids([player.steamID], 1, f"Upgrade failed: {reason}")
+                #     except Exception as e:
+                #         print(f"⚠️ notify_steam_ids failed: {e}")
 
-    
 
 
+
+        elif function_code == PacketType.SELL_RESOURCE:
+            resource_type = int.from_bytes(await self.reader.readexactly(2), 'little')
+            count = int.from_bytes(await self.reader.readexactly(2), 'little')
+            from_planet = int.from_bytes(await self.reader.readexactly(8), 'little')
+            player, agency = self._get_player_and_agency()
+            if not player or not agency:
+                return
+            if agency.sell_resource(player, from_planet, resource_type, count):
+                print(f"✅ Sold {count} of resource type {resource_type} from planet {from_planet}. "
+                      f"Player now has {player.money}.")
+            else:
+                print(f"❌ Sell failed.")
 
         else:
             print(f"🔴 Unknown function code: {function_code}")

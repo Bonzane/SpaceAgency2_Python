@@ -9,7 +9,7 @@ from physics import G
 import bisect
 from regions import Region
 from resources import Resource
-
+import random
 
 class ObjectType(IntEnum):
     UNDEFINED = 0
@@ -56,6 +56,10 @@ class ObjectType(IntEnum):
     PROCEDURAL_ROCKY_PLANET = 41
     PROCEDURAL_GAS_GIANT = 42
     BASIC_VESSEL = 43
+
+# Asteroid belt rough bounds (in km). 
+ASTEROID_BELT_INNER_KM = 300_000_000.0
+ASTEROID_BELT_OUTER_KM = 480_000_000.0
 
 # ID GEN
 _object_id_counter = itertools.count(1)
@@ -145,6 +149,7 @@ class Planet(PhysicsObject):
     orbit_direction: int = 1              # 1 = counterclockwise, -1 = clockwise
     atmosphere_km: float = 10000
     atmosphere_density: float = 1.0
+    name: str = "Unnamed Planet"
 
     regions_km: Dict[int, float] = field(default_factory=dict)
     _region_edges: List[float] = field(default_factory=list, init=False, repr=False)
@@ -221,9 +226,34 @@ class Sun(Planet):
             mass=1.989e30,
             radius_km=695700.0,
             atmosphere_km=1_000_000.0,
-            atmosphere_density=1.0
+            atmosphere_density=1.0,
+            name="The Sun"
         )
         self.set_temperature(5778.0)
+
+    def do_update(self, dt: float, acc: Tuple[float, float]):
+        # Integrate normally
+        super().do_update(dt, acc)
+
+        # Clamp to a sphere of radius 1000 km around the origin
+        px, py = self.position
+        r2 = px*px + py*py
+        limit = 1000.0
+        if r2 > limit * limit:
+            r = math.sqrt(r2)
+            nx, ny = px / r, py / r  # outward normal
+
+            # Remove outward radial velocity so we don't immediately re-escape
+            vx, vy = self.velocity
+            v_rad = vx * nx + vy * ny    # scalar radial speed
+            if v_rad > 0.0:
+                vx -= v_rad * nx
+                vy -= v_rad * ny
+                self.velocity = (vx, vy)
+
+            # Snap onto the boundary
+            self.position = (nx * limit, ny * limit)
+
 
 class Earth(Planet):
     def __init__(self):
@@ -234,7 +264,8 @@ class Earth(Planet):
             mass=5.972e24,                      #kg
             radius_km=6371.0, 
             atmosphere_km=10000.0,              #km*10
-            atmosphere_density=1.0
+            atmosphere_density=1.0,
+            name="Earth"
         )
         self.set_resources({
             Resource.METAL: 500,
@@ -276,7 +307,8 @@ class Mars(Planet):
             mass=6.41693e23,                      #kg
             radius_km = 3389.5, 
             atmosphere_km=8000.0,              #km*10
-            atmosphere_density=0.6
+            atmosphere_density=0.6,
+            name="Mars"
         )
         self.set_regions({
             Region.MARS_CLOSE: 30_000,
@@ -302,7 +334,8 @@ class Venus(Planet):
             mass=4.867e24,                      #kg
             radius_km = 3389.5, 
             atmosphere_km=10000.0,              #km*10
-            atmosphere_density=2.0
+            atmosphere_density=2.0,
+            name="Venus"
         )
 
         self.set_temperature(737.0)
@@ -322,7 +355,8 @@ class Mercury(Planet):
             mass=3.285e23,                      #kg
             radius_km = 2439.7, 
             atmosphere_km=5000.0,              #km*10
-            atmosphere_density=0.5
+            atmosphere_density=0.5,
+            name="Mercury"
         )
 
         self.set_temperature(440.0)
@@ -342,7 +376,8 @@ class Jupiter(Planet):
             mass=1.898e27,                      #kg
             radius_km = 69911.0, 
             atmosphere_km=20000.0,              #km*10
-            atmosphere_density=2.0
+            atmosphere_density=2.0,
+            name="Jupiter"
         )
         self.set_regions({
             Region.JUPITER_CLOSE: 1_000_000,
@@ -367,7 +402,8 @@ class Saturn(Planet):
             mass=5.685e26,                      #kg
             radius_km = 58232.0, 
             atmosphere_km=15000.0,              #km*10
-            atmosphere_density=1.5
+            atmosphere_density=1.5,
+            name="Saturn"
         )
         self.set_regions({
             Region.SATURN_CLOSE: 1_000_000,
@@ -392,7 +428,8 @@ class Uranus(Planet):
             mass = 8.681e25,                      #kg
             radius_km = 25362.0, 
             atmosphere_km=12000.0,              #km*10
-            atmosphere_density=1.5
+            atmosphere_density=1.5,
+            name="Uranus"
         )
         self.set_regions({
             Region.URANUS_CLOSE: 5_000_000,
@@ -417,7 +454,8 @@ class Neptune(Planet):
             mass = 1.0241e26,                      #kg
             radius_km = 24622.0, 
             atmosphere_km=11000.0,              #km*10
-            atmosphere_density=1.4
+            atmosphere_density=1.4,
+            name="Neptune"
         )
         self.set_regions({
             Region.NEPTUNE_CLOSE: 2_000_000,
@@ -460,7 +498,8 @@ class Luna(Planet):
             orbit_radius=moon_distance,
             radius_km=1737.0, 
             atmosphere_km=1000.0,
-            atmosphere_density=0.5
+            atmosphere_density=0.5,
+            name="Luna"
         )
 
         self.set_temperature(220.0)
@@ -478,3 +517,44 @@ class Luna(Planet):
             self.rotation = direction_between_degrees(self.position, self.orbits.position)
 
       
+
+@dataclass
+class AsteroidBeltAsteroid(PhysicsObject):
+    def __init__(self):
+        # --- Hardcoded belt parameters ---
+        SUN_MASS = 1.989e30              # kg
+        BELT_INNER = 300_000_000.0       # km
+        BELT_OUTER = 550_000_000.0       # km
+        DENSITY = 2500.0                 # kg/m^3
+        MIN_RADIUS_KM = 0.5
+        MAX_RADIUS_KM = 30.0
+        NOISE = 0.02                     # km/s jitter
+
+        # Pick asteroid radius
+        radius_km = random.uniform(MIN_RADIUS_KM, MAX_RADIUS_KM)
+
+        # Estimate mass from volume * density
+        r_m = radius_km * 1000.0
+        volume = (4/3) * math.pi * (r_m**3)
+        mass = DENSITY * volume
+
+        # Random orbit distance + angle
+        r = random.uniform(BELT_INNER, BELT_OUTER)
+        theta = random.uniform(0.0, 2.0 * math.pi)
+        px = r * math.cos(theta)
+        py = r * math.sin(theta)
+
+        # Circular orbital speed around the Sun
+        v = math.sqrt(G * SUN_MASS / r) + random.uniform(-NOISE, NOISE)
+
+        # Tangential unit vector (CCW)
+        tx, ty = -math.sin(theta), math.cos(theta)
+        vx, vy = tx * v, ty * v
+
+        super().__init__(
+            object_type=ObjectType.ASTEROID_BELT_ASTEROID,
+            position=(px, py),
+            velocity=(vx, vy),
+            mass=mass,
+            radius_km=radius_km,
+        )

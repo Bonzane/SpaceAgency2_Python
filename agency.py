@@ -29,13 +29,6 @@ class Agency:
     def __post_init__(self):
         default_building = Building(BuildingType.EARTH_HQ, self.shared, 7, 2, self)
         self.bases_to_buildings[2] = [default_building]
-        self.bases_to_buildings[4] = []
-        self.bases_to_buildings[5] = []
-        self.bases_to_buildings[6] = []
-        self.bases_to_buildings[7] = []
-        self.bases_to_buildings[8] = []
-        self.bases_to_buildings[9] = []
-        self.bases_to_buildings[10] = []
         self.attributes = copy.deepcopy(self.shared.agency_default_attributes)
 
 
@@ -63,6 +56,64 @@ class Agency:
             if id64 in self.shared.players
         ]
 
+    def sell_resource(self, player, from_planet: int, resource_type: int, count: int) -> bool:
+        """
+        Sell `count` units of `resource_type` from the agency's base inventory at `from_planet`.
+        - Decrements base inventory if sufficient quantity exists.
+        - Credits player's money by count * transfer_rate (from shared.game_desc resources).
+        - Returns True on success, False otherwise.
+        """
+        # Basic validation
+        try:
+            rt = int(resource_type)
+            cnt = int(count)
+            pid = int(from_planet)
+        except Exception:
+            return False
+        if cnt <= 0:
+            return False
+        if player is None:
+            return False
+        # (Optional) ensure the player belongs to this agency
+        if getattr(player, "steamID", None) not in self.members:
+            # Not strictly necessary since caller passes agency, but it's safer.
+            return False
+
+        # Resolve rate (price per unit)
+        rate = int(getattr(self.shared, "resource_transfer_rates", {}).get(rt, 0))
+        if rate <= 0:
+            # Not sellable or worthless
+            return False
+
+        # Ensure the planet inventory exists and has enough
+        inv = self.base_inventories.setdefault(pid, {})  # {resource_type:int -> qty:int}
+        have = int(inv.get(rt, 0))
+        if have < cnt:
+            return False
+
+        # Perform the sale
+        inv[rt] = have - cnt
+        if inv[rt] <= 0:
+            # keep things tidy
+            inv.pop(rt, None)
+
+        # Credit player (optionally scale by global cash multiplier)
+        total_value = rate * cnt
+        # If you want to respect the global multiplier (used for incomes), apply it here:
+        total_value = int(total_value * float(getattr(self.shared, "server_global_cash_multiplier", 1.0)))
+
+        player.money += total_value
+
+        # (Optional) telemetry / logging
+        try:
+            rname = self.shared.game_desc["resources"][rt][0]
+        except Exception:
+            rname = f"Resource#{rt}"
+        print(f"✅ Agency {self.id64} sold {cnt}x {rname} (rt={rt}) from planet {pid} "
+              f"for {total_value}. Player {getattr(player, 'steamID', '?')} money={player.money}")
+        return True
+
+
     # === Identity / State Methods ===
     def set_name(self, name: str) -> None:
         self.name = name
@@ -87,6 +138,10 @@ class Agency:
 
     def get_all_vessels(self) -> List[Vessel]:
         return self.vessels
+    
+    def remove_vessel(self, vessel_or_id) -> None:
+        vid = getattr(vessel_or_id, "object_id", vessel_or_id)
+        self.vessels = [v for v in self.vessels if getattr(v, "object_id", None) != vid]
     
     # === Attributes ===
     def update_attributes(self) -> None:

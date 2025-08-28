@@ -6,7 +6,7 @@ from player import Player
 from agency import Agency
 import agency
 from packet_types import PacketType, DataGramPacketType, ChatMessage
-from typing import Set, Dict, Tuple
+from typing import Iterable, Sequence, Set, Dict, Tuple
 import aiohttp
 import struct
 import json
@@ -104,6 +104,8 @@ class ServerMissionControl:
         self.server_global_cash_multiplier = 1.0
         self.game = None
         self.game_resources = None
+        self.resource_transfer_rates: dict[int, int] = {}
+        self.resource_names: list[str] = []
         with open("game_desc.json", "r") as game_description_file:
             self.game_description = json.load(game_description_file)
             self.game_buildings_list = self.game_description.get("buildings")
@@ -113,6 +115,29 @@ class ServerMissionControl:
             self.buildings_by_id = {b["id"]: b for b in self.game_buildings_list}
             self.agency_default_attributes = self.game_description.get("agency_default_attributes", {})
             self.game_resources = self.game_description.get("resources", [])
+
+        for idx, item in enumerate(self.game_resources):
+            name, rate = None, 0
+            # support your canonical ["Name", rate] as well as a dict fallback
+            if isinstance(item, (list, tuple)) and len(item) >= 2:
+                name = str(item[0])
+                try:
+                    rate = int(item[1])
+                except (TypeError, ValueError):
+                    rate = 0
+            elif isinstance(item, dict):
+                # optional compatibility if format ever changes
+                name = str(item.get("name", f"Resource#{idx}"))
+                try:
+                    rate = int(item.get("rate", 0))
+                except (TypeError, ValueError):
+                    rate = 0
+            else:
+                name = f"Resource#{idx}"
+                rate = 0
+
+            self.resource_names.append(name)
+            self.resource_transfer_rates[idx] = max(0, rate)  # never negative
 
     def get_next_agency_id(self):
         current = self.next_available_agency_id
@@ -136,7 +161,19 @@ class ServerMissionControl:
     
     def set_streaming_port_extern(self, newport):
         self.external_streaming_port = newport
-    
+
+    def get_resource_rate(self, resource_type: int) -> int:
+        try:
+            return int(self.resource_transfer_rates.get(int(resource_type), 0))
+        except Exception:
+            return 0
+
+    def get_resource_name(self, resource_type: int) -> str:
+        try:
+            return self.resource_names[int(resource_type)]
+        except Exception:
+            return f"Resource#{resource_type}"
+        
 
 
 
@@ -663,3 +700,118 @@ class StreamingServer:
 
 
 
+
+
+
+    def build_notification_packet(self, notif_kind: int, message: str) -> bytes:
+        """
+        Layout:
+        u8  opcode = DataGramPacketType.NOTIFICATION
+        u8  notif_kind 
+        str utf-8 NUL-terminated message
+        """
+        pkt = bytearray()
+        pkt.append(DataGramPacketType.NOTIFICATION)
+        pkt.append(notif_kind & 0xFF)
+        pkt += message.encode("utf-8") + b"\x00"
+        return pkt
+
+    def _udp_send_to_session(self, session, packet: bytes) -> bool:
+        """
+        Low-level helper. Returns True if we had an address to send to.
+        """
+        if not session.alive:
+            return False
+        udp_port = getattr(session, "udp_port", None)
+        if not udp_port:
+            # Client hasn't done LATENCY_LEARN_PORT yet.
+            return False
+        addr = (session.remote_ip, udp_port)
+        self.transport.sendto(packet, addr)
+        return True
+
+    async def notify_sessions(self, sessions: Iterable["Session"], notif_kind: int, message: str) -> int:
+        """
+        Send a NOTIFICATION to the provided sessions. Returns the number of sends attempted.
+        """
+        pkt = self.build_notification_packet(notif_kind, message)
+        sent = 0
+        for s in sessions:
+            sent += 1 if self._udp_send_to_session(s, pkt) else 0
+        return sent
+
+    async def notify_steam_ids(self, steam_ids: Sequence[int], notif_kind: int, message: str) -> int:
+        """
+        Convenience: target by Steam IDs.
+        """
+        idset = set(steam_ids)
+        targets = [
+            s for s in self.control.sessions
+            if s.alive and s.steam_id in idset
+        ]
+        return await self.notify_sessions(targets, notif_kind, message)
+
+    async def notify_agency(self, agency_id: int, notif_kind: int, message: str) -> int:
+        """
+        Convenience: target everyone in a specific agency.
+        """
+        targets = [
+            s for s in self.control.sessions
+            if s.alive and getattr(getattr(s, "player", None), "agency_id", None) == agency_id
+        ]
+        return await self.notify_sessions(targets, notif_kind, message)
+
+    async def notify_same_system(self, galaxy: int, system: int, notif_kind: int, message: str) -> int:
+        """
+        Convenience: target all players in a given (galaxy, system).
+        """
+        targets = [
+            s for s in self.control.sessions
+            if s.alive and getattr(getattr(s, "player", None), "galaxy", None) == galaxy
+               and getattr(getattr(s, "player", None), "system", None) == system
+        ]
+        return await self.notify_sessions(targets, notif_kind, message)
+
+
+
+    def build_vessel_destroyed_packet(self, vessel_id: int) -> bytes:
+        """
+        Layout:
+        u8   opcode = DataGramPacketType.NOTIFY_VESSEL_DESTROYED
+        u64  vessel_id
+        """
+        pkt = bytearray()
+        pkt.append(DataGramPacketType.NOTIFY_VESSEL_DESTROYED)
+        pkt += struct.pack('<Q', int(vessel_id))
+        return pkt
+
+    def notify_vessel_destroyed(self, vessel) -> int:
+        """
+        Send NOTIFY_VESSEL_DESTROYED to all sessions whose players are
+        in the same (galaxy, system) as the destroyed vessel.
+        Returns number of packets actually sent.
+        """
+        # Find the chunk coordinates *before* the vessel is removed
+        chunk = getattr(vessel, "home_chunk", None)
+        if chunk is None:
+            # Fallback: use the object-id → chunk index if available
+            cm = getattr(self.shared, "chunk_manager", None)
+            if cm:
+                chunk = cm.get_chunk_from_object_id(int(vessel.object_id))
+        if chunk is None:
+            return 0
+
+        galaxy = getattr(chunk, "galaxy", None)
+        system = getattr(chunk, "system", None)
+        pkt = self.build_vessel_destroyed_packet(int(vessel.object_id))
+
+        sent = 0
+        for s in self.control.sessions:
+            if not s.alive:
+                continue
+            p = getattr(s, "player", None)
+            if not p:
+                continue
+            if getattr(p, "galaxy", None) == galaxy and getattr(p, "system", None) == system:
+                sent += 1 if self._udp_send_to_session(s, pkt) else 0
+        return sent

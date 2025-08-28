@@ -92,8 +92,13 @@ class ChunkManager:
     def register_object(self, object_id, galaxy, system):
         self.object_id_to_chunk[object_id] = (galaxy, system)
 
+    def unregister_object(self, object_id: int) -> bool:
+        """Forget which chunk an object_id lives in. Returns True if it was present."""
+        with self._lock:
+            return self.object_id_to_chunk.pop(object_id, None) is not None
+
     def get_chunk_from_object_id(self, object_id):
-        chunk_coords = self.object_id_to_chunk.get(object_id)
-        if chunk_coords is None:
-            return None
-        return self.loaded_chunks.get(chunk_coords)
+        with self._lock:
+            chunk_coords = self.object_id_to_chunk.get(object_id)
+        return self.loaded_chunks.get(chunk_coords) if chunk_coords else None
+

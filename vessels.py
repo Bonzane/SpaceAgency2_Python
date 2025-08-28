@@ -2,13 +2,13 @@ import asyncio
 from dataclasses import dataclass, field
 import struct
 from typing import List, Dict, Tuple, Any, Union, Optional
-from physics import G
+from physics import G, AU_KM
 from gameobjects import PhysicsObject, GameObject, ObjectType
 from enum import Enum, IntEnum
 import math
 from packet_types import DataGramPacketType
 from vessel_components import Components
-from utils import ambient_temp_simple, shortest_delta_deg, wrap_deg
+from utils import ambient_temp_simple, shortest_delta_deg, wrap_deg, _coerce_int_keys, _notify_player_udp
 
 class VesselControl(IntEnum):
     FORWARD_THRUST_ENGAGE = 0x00
@@ -22,6 +22,7 @@ class VesselControl(IntEnum):
     REQUEST_CONTROL = 0x08
     DEPLOY_STAGE = 0x09
     SET_TELESCOPE_TARGET_ANGLE = 0x0A
+    SET_SYSTEM_STATE = 0x0B
 
 class VesselState(IntEnum):
     FORWARD_THRUSTER_ON = 0x00
@@ -57,6 +58,8 @@ class Vessel(PhysicsObject):
     shared: Any = field(default=None, repr=False, init=False)
     name : str = "Unnamed Vessel"
     mass : float = 0.0
+    hull_integrity : float = 100.0
+    armor : float = 0.0
     dry_mass : float = 0.0
     liquid_fuel_kg: float = 0.0
     liquid_fuel_capacity_kg: float = 0.0
@@ -64,6 +67,7 @@ class Vessel(PhysicsObject):
     capable_reverse_thrust: float = 0.0
     power_capacity: float = 0.0
     solar_power: float = 0.0
+    nuclear_power: float = 0.0
     power: float = 0.0
     object_type: ObjectType = ObjectType.BASIC_VESSEL
     center_of_mass: Tuple[float, float] = field(default=(0.0, 0.0), init=False)
@@ -80,6 +84,7 @@ class Vessel(PhysicsObject):
     home_planet: Any = None  # Reference to the planet where the vessel was launched
     home_chunk: Any = None
     altitude = 0.0 # Altitude above the home planet's surface
+    z_velocity : float = 0.0
     landed = True
     landed_angle_offset: float = 0.0
     strongest_gravity_force: float = 0.0
@@ -130,6 +135,8 @@ class Vessel(PhysicsObject):
         weighted_x = 0.0
         weighted_y = 0.0
         self.solar_power = 0.0
+        self.nuclear_power = 0.0
+        self.armor = 0.0
 
         self.systems.clear()
 
@@ -165,7 +172,6 @@ class Vessel(PhysicsObject):
                 self.capacity_by_stage[st] = self.capacity_by_stage.get(st, 0.0) + cap
             if power_cap > 0:
                 self.power_capacity_by_stage[st] = self.power_capacity_by_stage.get(st, 0.0) + power_cap
-            self.solar_power += float(attrs.get("solar-power", 0.0))
 
             # per-stage thrust capability
             stage_forward[st] = stage_forward.get(st, 0.0) + float(attrs.get("forward-thrust", 0.0))
@@ -192,6 +198,9 @@ class Vessel(PhysicsObject):
                 )
 
                 attached_tau_bonus += float(attrs.get("thermal-resistance", 0.0))
+                self.solar_power += float(attrs.get("solar-power", 0.0))
+                self.nuclear_power += float(attrs.get("nuclear-power", 0.0))
+                self.armor += float(attrs.get("armor", 0.0))
 
         # set thermal resistance based on attached components
         self.thermal_resistance = max(1e-3, base_tau + attached_tau_bonus)
@@ -226,7 +235,7 @@ class Vessel(PhysicsObject):
         self.liquid_fuel_kg = self._current_stage_fuel()
 
         self.power_capacity = self._attached_power_capacity()
-        self.power = self._attached_power()
+        self.power = min(self._attached_power(), self.power_capacity)
 
 
     def calculate_mass(self, component_data_lookup: Dict[int, Dict]) -> float:
@@ -301,8 +310,8 @@ class Vessel(PhysicsObject):
             self.power = self._attached_power()
             return False
 
-        self.power = self._attached_power()
-        return True
+        self.power = min(self._attached_power(), self._attached_power_capacity())
+        return remaining <= 0.0
 
     def _charge_power(self, amount: float):
         """
@@ -323,7 +332,10 @@ class Vessel(PhysicsObject):
             remaining -= put
             if remaining <= 0.0:
                 break
-        self.power = self._attached_power()
+        self.power = max(0.0, min(self._attached_power(), self._attached_power_capacity()))
+
+
+
 
     
     def do_control(self, control):
@@ -345,7 +357,19 @@ class Vessel(PhysicsObject):
             case VesselControl.CW_THRUST_DISENGAGE:
                 self.control_state[VesselState.CW_THRUST_ON] = False
             case VesselControl.DEPLOY_STAGE:
-                self.deploy_stage()
+                self.deploy_stage(force=True)
+
+    def set_system_state(self, system_id, new_state):
+        """
+        Set the state of a system by its ID.
+        """
+        system = Systems(system_id)
+        if system in self.systems:
+            self.systems[system].active = new_state
+            print(f"System {system.name} state set to {'active' if new_state else 'inactive'}")
+        else:
+            print(f"System {system.name} not found in vessel systems.")
+
 
     def _current_stage_capacity(self) -> float:
         return float(self.capacity_by_stage.get(self.stage, 0.0))
@@ -357,12 +381,35 @@ class Vessel(PhysicsObject):
         cap = self._current_stage_capacity()
         self.fuel_by_stage[self.stage] = max(0.0, min(value, cap))
 
-    def deploy_stage(self):
+    def _notify_force_resolve(self):
+        """Schedule tcp.broadcast_force_resolve(self) whether we're on the main loop or a worker thread."""
+        tcp = getattr(self.shared, "tcp_server", None)
+        if not tcp:
+            return
+        coro = tcp.broadcast_force_resolve(self)
+        try:
+            # If we're on the event loop thread:
+            loop = asyncio.get_running_loop()
+            loop.create_task(coro)
+        except RuntimeError:
+            # We're in a non-async thread. Use a reference to the main loop if you have it.
+            main_loop = getattr(self.shared, "main_loop", None)
+            if main_loop and main_loop.is_running():
+                asyncio.run_coroutine_threadsafe(coro, main_loop)
+            else:
+                # As a last resort, just skip notifying instead of crashing.
+                # (You can also queue this to a thread-safe queue your main loop drains.)
+                print("⚠️ No running event loop found to notify force_resolve.")
+
+    def deploy_stage(self, force: bool = False):
         if self.stage <= 0:
             print("Can not deploy - already deployed!")
             return
-        if not self.deployment_ready:
+        if (not force) and (not self.deployment_ready):
             print("Can not deploy - not ready!")
+            return
+        elif (self.stage == 1) and (not self.deployment_ready):
+            print("Can not deploy to payload unless in space.")
             return
 
         prev_stage = self.stage
@@ -372,6 +419,7 @@ class Vessel(PhysicsObject):
         # Remove components that no longer belong
         self.drop_components()
 
+        # Kill thrust on stage change
         self.control_state[VesselState.CCW_THRUST_ON] = False
         self.control_state[VesselState.CW_THRUST_ON] = False
         self.control_state[VesselState.REVERSE_THRUSTER_ON] = False
@@ -379,9 +427,14 @@ class Vessel(PhysicsObject):
 
         print(f"✅ Vessel {self.object_id} staged: {prev_stage} → {self.stage} (components={len(self.components)})")
 
-        tcp = self.shared.tcp_server
-        if tcp is not None:
-            asyncio.create_task(tcp.broadcast_force_resolve(self))
+        self._notify_force_resolve()
+
+
+    def _auto_stage_if_empty(self):
+        # Only stages that actually had tanks should auto-deploy
+        if self.stage > 0 and self._current_stage_capacity() > 0.0 and self._current_stage_fuel() <= 0.0:
+            print(f"⚙️ Auto-staging: fuel depleted at stage {self.stage}")
+            self.deploy_stage(force=True)
 
 
     def drop_components(self):
@@ -394,6 +447,7 @@ class Vessel(PhysicsObject):
         # prune per-stage tanks that are no longer attached
         self.fuel_by_stage = {s: v for s, v in self.fuel_by_stage.items() if s <= self.stage}
         self.capacity_by_stage = {s: v for s, v in self.capacity_by_stage.items() if s <= self.stage}
+        self.power_by_stage = {s:v for s,v in self.power_by_stage.items()      if s <= self.stage}  
 
         self.calculate_vessel_stats()
 
@@ -475,9 +529,52 @@ class Vessel(PhysicsObject):
             self.deployment_ready = True
 
 
+    def _rel_speed_to(self, body) -> float:
+        if not body:
+            return float('inf')
+        vx, vy = self.velocity
+        pvx, pvy = body.velocity
+        return math.hypot(vx - pvx, vy - pvy)
+
+    def _maybe_begin_landing_when_matching_velocity(self, prev_rel: float, post_rel: float):
+        if self.landed or not self.home_planet:
+            return
+
+        # Only while actually thrusting forward/reverse
+        if not (self.control_state.get(VesselState.FORWARD_THRUSTER_ON) or
+                self.control_state.get(VesselState.REVERSE_THRUSTER_ON)):
+            return
+
+        atm = float(self.home_planet.atmosphere_km)
+
+        # Only trigger from the top of the atmosphere
+        if self.altitude < atm - 1e-6:
+            return
+
+        # NEW: only if we're actually near the planet — inside atmospheric radius (R + atm)
+        hx, hy = self.home_planet.position
+        x, y = self.position
+        dist = math.hypot(x - hx, y - hy)
+        if dist > float(self.home_planet.radius_km):
+            return
+
+        # If thrust reduced |v - planet.v|, begin descent
+        if post_rel + 1e-6 < prev_rel:
+            self.altitude = max(0.0, atm - 1.0)
+            if self.z_velocity > 0.0:
+                self.z_velocity = 0.0
+
+
+
     # Extended Physics
     def do_update(self, dt: float, acc: Tuple[float, float]):
         self.last_forward_thrust_kN = 0.0
+
+        if not self.landed:
+            self._maybe_rehome_to_strongest()
+
+        _prev_rel = self._rel_speed_to(self.home_planet)
+
         # 1. Apply Thrust before physics updates
         if self.control_state.get(VesselState.FORWARD_THRUSTER_ON, False):
             self.apply_forward_thrust(dt)
@@ -487,6 +584,9 @@ class Vessel(PhysicsObject):
             self.apply_cw_thrust(dt)
         if self.control_state.get(VesselState.REVERSE_THRUSTER_ON, False):
             self.apply_reverse_thrust(dt)
+
+        self._maybe_begin_landing_when_matching_velocity(_prev_rel, self._rel_speed_to(self.home_planet))
+
 
         # Check transition condition: should we launch?
         if self.landed:
@@ -508,11 +608,18 @@ class Vessel(PhysicsObject):
         #3 - Do Payload Mechanics
         self.do_payload_mechanics(dt)
         self.cool_towards_ambient(dt)
+        self.take_temperature_damage(dt)
         self.check_deployment_ready()
-
+        self.check_destroyed()
+        
+        scaled_dt = dt / max(1e-9, float(self.shared.gamespeed))
         #4 - Charge Power
         if self.solar_power > 0.0:
-            self._charge_power(self.solar_power * dt)
+            eff = self.solar_efficiency_from_distance(self.position)
+            self._charge_power(self.solar_power * scaled_dt * eff)
+
+        if self.nuclear_power > 0.0:
+            self._charge_power(self.nuclear_power * scaled_dt)
 
         # Clamp to speed of light (FOR NOW!)
         vx, vy = self.velocity
@@ -539,15 +646,20 @@ class Vessel(PhysicsObject):
             force = 0.0
         chunkpacket += struct.pack('<f', force)
         chunkpacket += struct.pack('<B', self.landed)
+        chunkpacket += struct.pack('<f', self.hull_integrity)
         chunkpacket += struct.pack('<f', self.liquid_fuel_kg)
         chunkpacket += struct.pack('<f', self.liquid_fuel_capacity_kg)
-        chunkpacket += struct.pack('<f', self.power_capacity)
         chunkpacket += struct.pack('<f', self.power)
+        chunkpacket += struct.pack('<f', self.power_capacity)
         chunkpacket += struct.pack('<f', self.maximum_operating_tempterature_c)
         chunkpacket += struct.pack('<f', self.current_temperature_c)
         chunkpacket += struct.pack('<f', self.ambient_temp_K)
         chunkpacket += struct.pack('<H', self.stage)
         chunkpacket += struct.pack('<B', self.deployment_ready)
+        chunkpacket += struct.pack('<H', len(self.systems))
+        for sys_type, sys in self.systems.items():
+            chunkpacket += struct.pack('<H', int(sys_type))        # system type
+            chunkpacket += struct.pack('<B', 1 if sys.active else 0)
 
         for player in self.shared.players.values():
             session = player.session
@@ -573,6 +685,15 @@ class Vessel(PhysicsObject):
         #    self.velocity = (0.0, 0.0)
         #    self.rotation_velocity = 0.0
 
+    def solar_efficiency_from_distance(self, pos=None, sun_pos=(0.0, 0.0), ref_dist_km=AU_KM):
+        if pos is None:
+            pos = self.position
+        dx = pos[0] - sun_pos[0]
+        dy = pos[1] - sun_pos[1]
+        r  = max(1.0, math.hypot(dx, dy))
+        eff = (ref_dist_km / r) ** 2
+        return min(1.0, eff)                 # cap at 100%
+
     def should_unland(self) -> bool:
         if not self.control_state.get(VesselState.FORWARD_THRUSTER_ON, False):
             return False
@@ -590,21 +711,52 @@ class Vessel(PhysicsObject):
         if self.landed or not self.home_planet:
             return
 
-        ALT_GAIN = 100.0
-        ALT_EXP  = 1.0
-
-        acc_proxy = self.last_forward_thrust_kN / max(self.mass, 1.0)
+        # --- constants (tweak to taste) ---
+        Z_GRAVITY_KM_S2      = 0.001   # ~9.8 m/s^2 downward when in atmosphere
+        THRUST_LIFT_ACCEL    = 0.130   # scales how much forward thrust raises z-velocity
+        MAX_SAFE_TOUCHDOWN   = 1.00   # km/s (≈30 m/s) threshold between land vs explode
 
         atm_height = max(1e-6, float(self.home_planet.atmosphere_km))
-        alt_norm   = max(0.0, min(1.0, self.altitude / atm_height))
-        BASE = 0.1  # 20% of full effect at ground
-        atmos_factor = BASE + (1.0 - BASE) * (alt_norm ** ALT_EXP)
+        in_atmo    = self.altitude < atm_height - 1e-6
 
-        self.altitude_delta = ALT_GAIN * acc_proxy * atmos_factor
-        self.altitude = min(
-            self.altitude + self.altitude_delta * dt,
-            self.home_planet.atmosphere_km
-        )
+        # How much "lift" your forward thrust provides (same inputs you already used)
+        # Keep your atmospheric fade so thrust matters less near the top.
+        acc_proxy = self.last_forward_thrust_kN / max(self.mass, 1.0)
+        alt_norm = max(0.0, min(1.0, self.altitude / atm_height))  # 0=ground, 1=top
+        dens = 1.0 - alt_norm                                      # 1 at ground → 0 at top
+
+        # Thrust effectiveness: full near ground, fades to BASE near the top
+        BASE = 0.5        # min effectiveness at top of atmosphere (0..1)
+        FADE_SHAPE = 2.0  # steeper fade near the top (1 = linear)
+        atmos_factor = BASE + (1.0 - BASE) * (dens ** FADE_SHAPE)
+
+        # Vertical acceleration: thrust lift minus constant downward accel in atmo
+        a_up   = THRUST_LIFT_ACCEL * acc_proxy * atmos_factor
+        a_down = Z_GRAVITY_KM_S2 if in_atmo else 0.0
+        a_z    = a_up - a_down
+
+        # Integrate z-velocity, then altitude
+        self.z_velocity += a_z * dt
+        self.altitude   += self.z_velocity * dt
+        self.altitude_delta = self.z_velocity  # for telemetry (was "rate of change")
+
+        # Clamp at top of atmosphere; stop climbing further
+        if self.altitude >= atm_height:
+            self.altitude = atm_height
+            if self.z_velocity > 0.0:
+                self.z_velocity = 0.0
+
+        # Touchdown check
+        if self.altitude <= 0.0:
+            impact_speed = abs(self.z_velocity)
+            self.altitude = 0.0
+            self.z_velocity = 0.0
+
+            if impact_speed > MAX_SAFE_TOUCHDOWN:
+                print(f"💥 Hard landing: impact {impact_speed:.3f} km/s -> destroy")
+                self.destroy()
+            else:
+                self.land()
 
             
     def _clamp01(self, x: float) -> float:
@@ -663,54 +815,90 @@ class Vessel(PhysicsObject):
             self.position = (x + (tx - x) * alpha, y + (ty - y) * alpha)
 
 
+    def _world_angle_from_planet(self, planet_rot_deg: float, offset_deg: float) -> float:
+        """Convert screen-world planet rotation + offset -> math-world angle (CCW, +y up)."""
+        # planet_rot is clockwise in screen coords; negate to get CCW
+        return (-(planet_rot_deg + offset_deg)) % 360.0
 
+    def _offset_from_world_angle(self, planet_rot_deg: float, world_ccw_deg: float) -> float:
+        """Convert a math-world angle (from atan2) -> screen-world offset to store."""
+        return (-(world_ccw_deg) - planet_rot_deg) % 360.0
+
+    def _looks_like_planet(self, obj) -> bool:
+        # Import inside the function to avoid any circular-import surprises
+        from gameobjects import Planet, ObjectType
+        if not isinstance(obj, Planet):
+            return False
+
+        # Optional: exclude bodies you never want to "land" on
+        NON_LANDABLE = {
+        }
+        return getattr(obj, "object_type", None) not in NON_LANDABLE
+
+    def _maybe_rehome_to_strongest(self):
+        if self.landed:
+            return
+        src = self.strongest_gravity_source
+        if not self._looks_like_planet(src):
+            return
+        if src is self.home_planet:
+            return
+
+        self.home_planet = src
+        self.altitude = float(src.atmosphere_km)  # top of new atmo
+        self.z_velocity = 0.0
+        self.deployment_ready = False
 
 
     def land(self):
         self.landed = True
         self.altitude = 0.0
+        self.z_velocity = 0.0
         self.rotation_velocity = 0.0
         self.velocity = self.home_planet.velocity
 
-        # Calculate angle from planet center to vessel at time of landing
+        # Math-world angle at the touch point (atan2 is CCW, +y up)
         dx = self.position[0] - self.home_planet.position[0]
         dy = self.position[1] - self.home_planet.position[1]
-        angle = math.degrees(math.atan2(dy, dx))
+        angle_ccw = math.degrees(math.atan2(dy, dx))
 
-        # Store angle offset for surface lock
-        self.landed_angle_offset = angle - self.home_planet.rotation
+        # Store an offset that lives in the same "space" as planet.rotation
+        self.landed_angle_offset = self._offset_from_world_angle(self.home_planet.rotation, angle_ccw)
 
-        # Reposition exactly on surface
-        radius_km = self.home_planet.radius_km
-        angle_rad = math.radians(self.landed_angle_offset + self.home_planet.rotation)
-        self.position = (
-            self.home_planet.position[0] + radius_km * math.cos(angle_rad),
-            self.home_planet.position[1] + radius_km * math.sin(angle_rad)
-        )
+        # Rebuild exact surface position using a *consistent* transform
+        R = float(self.home_planet.radius_km)
+        world_deg = self._world_angle_from_planet(self.home_planet.rotation, self.landed_angle_offset)
+        ang = math.radians(world_deg)
 
-        # Match rotation to surface angle
-        self.rotation = self.home_planet.rotation + self.landed_angle_offset
+        cx, cy = self.home_planet.position
+        self.position = (cx + R * math.cos(ang), cy + R * math.sin(ang))
+
+        # Face radially (use the same world angle you just used for placement)
+        self.rotation = -world_deg
+
 
     def stay_landed(self):
         self.velocity = self.home_planet.velocity
+        self.z_velocity = 0.0
         self.rotation_velocity = 0.0
         self.altitude = 0.0
 
-        radius_km = self.home_planet.radius_km
-        angle_deg = self.landed_angle_offset + self.home_planet.rotation
-        angle_rad = math.radians(angle_deg)
+        R = float(self.home_planet.radius_km)
+        world_deg = self._world_angle_from_planet(self.home_planet.rotation, self.landed_angle_offset)
+        ang = math.radians(world_deg)
 
-        self.position = (
-            self.home_planet.position[0] + radius_km * math.cos(-angle_rad),
-            self.home_planet.position[1] + radius_km * math.sin(-angle_rad)
-        )
-        self.rotation = angle_deg
+        cx, cy = self.home_planet.position
+        self.position = (cx + R * math.cos(ang), cy + R * math.sin(ang))
+        self.rotation = -world_deg
+
+
 
 
 
     def unland(self):
         self.landed = False
         self.altitude = 0.1  # start just above the ground
+        self.z_velocity = 0.2
 
 
     def _nozzle_local_point(self, component, pt):
@@ -722,13 +910,42 @@ class Vessel(PhysicsObject):
         return (component.x, component.y)
 
     def _burn_fuel(self, kg: float) -> bool:
+        FUEL_EPS = 1e-6
         cur = self._current_stage_fuel()
-        if kg <= 0 or cur < kg:
+
+        if kg <= 0:
+            return True
+
+        if cur <= FUEL_EPS:
+            # snap to zero and auto-stage if this stage has tanks
+            if self._current_stage_capacity() > 0.0:
+                self._set_current_stage_fuel(0.0)
+                self.liquid_fuel_kg = 0.0
+                self.mass = self.calculate_mass(self.shared.component_data)
+                self._auto_stage_if_empty()
             return False
+
+        if cur < kg:
+            # consume the remainder, zero the tank, and auto-stage
+            self._set_current_stage_fuel(0.0)
+            self.liquid_fuel_kg = 0.0
+            self.mass = self.calculate_mass(self.shared.component_data)
+            self._auto_stage_if_empty()
+            return False
+
+        # normal burn
         self._set_current_stage_fuel(cur - kg)
         self.liquid_fuel_kg = self._current_stage_fuel()
         self.mass = self.calculate_mass(self.shared.component_data)
+
+        if self.liquid_fuel_kg <= FUEL_EPS and self._current_stage_capacity() > 0.0:
+            self._set_current_stage_fuel(0.0)
+            self.liquid_fuel_kg = 0.0
+            self.mass = self.calculate_mass(self.shared.component_data)
+            self._auto_stage_if_empty()
+
         return True
+
 
     def apply_forward_thrust(self, dt: float):
         total_kN = 0.0
@@ -935,6 +1152,81 @@ class Vessel(PhysicsObject):
         self.velocity = (vx + dvx, vy + dvy)
 
 
+    def take_temperature_damage(self, dt: float):
+        temperature_difference = self.current_temperature_c - self.maximum_operating_tempterature_c
+        if temperature_difference > 0:
+            # Calculate damage based on the temperature difference and time
+            damage = temperature_difference * dt * 0.01
+            self.hull_integrity -= damage
+
+    def check_destroyed(self):
+        if self.hull_integrity < 0:
+            print(f"Vessel {self.object_id} destroyed due to hull integrity failure.")
+            self.destroy()
+
+    def destroy(self):
+        """Destroy the vessel, removing it cleanly from controller, agency, and chunk."""
+        print(f"Vessel {self.object_id} destroyed.")
+
+        # 🔔 Notify everyone in the same chunk via UDP (send before removing from chunk)
+        try:
+            udp = getattr(self.shared, "udp_server", None)
+            tcp = getattr(self.shared, "tcp_server", None)
+            if udp and tcp and getattr(udp, "transport", None):
+                # Build packet: [u8 opcode][u64 vessel_id]
+                pkt = bytearray()
+                pkt.append(DataGramPacketType.NOTIFY_VESSEL_DESTROYED)
+                pkt += struct.pack('<Q', int(self.object_id))
+
+                # Determine chunk coords
+                chunk = getattr(self, "home_chunk", None)
+                if chunk is None:
+                    # fallback: resolve via chunk-manager index
+                    cm = getattr(self.shared, "chunk_manager", None)
+                    if cm:
+                        chunk = cm.get_chunk_from_object_id(int(self.object_id))
+                galaxy = getattr(chunk, "galaxy", None)
+                system = getattr(chunk, "system", None)
+
+                if galaxy is not None and system is not None:
+                    for s in list(tcp.sessions):
+                        if not s.alive:
+                            continue
+                        p = getattr(s, "player", None)
+                        if not p:
+                            continue
+                        if getattr(p, "galaxy", None) == galaxy and getattr(p, "system", None) == system:
+                            udp_port = getattr(s, "udp_port", None)
+                            if udp_port:
+                                addr = (s.remote_ip, udp_port)
+                                udp.transport.sendto(pkt, addr)
+        except Exception as e:
+            print(f"⚠️ Failed to send NOTIFY_VESSEL_DESTROYED: {e}")
+
+        # 1) Release control
+        if self.controlled_by and self.controlled_by != 0:
+            pid = self.controlled_by
+            self.controlled_by = 0
+            player = self.shared.players.get(pid)
+            if player and getattr(player, "controlled_vessel_id", None) == self.object_id:
+                player.controlled_vessel_id = -1
+            # (optional) notify clients via TCP about control release
+
+        # 2) Remove from agency
+        agency = self.shared.agencies.get(self.agency_id)
+        if agency is not None:
+            agency.remove_vessel(self)
+
+        # 3) Remove from chunk (and id map)
+        if self.home_chunk is not None:
+            self.home_chunk.remove_object(self)
+
+        # 4) Guard against stray ticks
+        self.mass = 0.0
+        self.components.clear()
+
+
+
     def cool_towards_ambient(self, dt: float):
         # Convert server dt to “real seconds”
         scaled_dt = dt / max(1e-9, float(getattr(self.shared, "gamespeed", 1.0)))
@@ -960,197 +1252,278 @@ class Vessel(PhysicsObject):
         if reg and reg.active and (reg.amount > 0.0):
             target_c = 20.0
 
-            # Convert 'amount' into an effective time constant (tweakable knob):
-            # larger amount -> faster pull to 20C. Example: tau_reg = 60s / amount
+            # How aggressively the hardware can pull toward target.
+            # Larger 'amount' -> faster (as you already had).
             tau_reg = max(1e-3, 60.0 / float(reg.amount))
-            alpha_reg = 1.0 - math.exp(-scaled_dt / tau_reg)
+            alpha_reg = 1.0 - math.exp(-dt / tau_reg)
 
-            # Draw power for this tick; scale effect if power is insufficient
-            needed_power = max(0.0, float(reg.power_draw)) * scaled_dt
+            # 1) How much work do we *want* to do this tick, 0..1?
+            #    - deadband: ignore tiny errors to avoid chatter.
+            #    - gain: how quickly effort rises with |error|.
+            deadband_c = 3                    # no work inside ±3C
+            gain_per_deg = 1.0 / 60.0            # ~60°C error => full effort
+            error_c = target_c - self.current_temperature_c
+            err_mag = abs(error_c)
+            if err_mag <= deadband_c:
+                requested_effort = 0.0
+            else:
+                requested_effort = min(1.0, (err_mag - deadband_c) * gain_per_deg)
+
+            # 2) Power needed scales with requested effort.
+            #    Interpret reg.power_draw as the *max* draw at 100% effort.
+            max_draw_per_sec = max(0.0, float(reg.power_draw))
+            needed_power = max_draw_per_sec * requested_effort * dt
+
+            # 3) Try to pay that power; compute what fraction we could actually afford.
             power_fraction = 1.0
             if needed_power > 0.0:
                 before = self.power
-                ok = self._draw_power(needed_power)
+                _ = self._draw_power(needed_power)   # may partially succeed
                 used = max(0.0, before - self.power)
-                power_fraction = min(1.0, used / needed_power) if needed_power > 0 else 1.0
+                power_fraction = 0.0 if needed_power <= 0.0 else min(1.0, used / needed_power)
 
-            # Apply regulation scaled by available power
-            if power_fraction > 0.0:
-                self.current_temperature_c += (target_c - self.current_temperature_c) * (alpha_reg * power_fraction)
+            # 4) Apply cooling/heating scaled by *actual* effort we could power.
+            actual_effort = requested_effort * power_fraction
+            if actual_effort > 0.0:
+                self.current_temperature_c += (error_c) * (alpha_reg * actual_effort)
 
 
 
 from collections import deque
+import heapq
 
 def calculate_component_stages(components, connections, component_data_lookup, payload_index=None):
     """
-    Stage assignment:
-      - Start at payload = stage 0.
-      - When traversing from a node to a neighbor, the neighbor's stage is:
-            neighbor_stage = current_stage + neighbor_attrs.get("stage-add", 0)
-        i.e., entering a separator bumps the stage for the separator itself and everything after it.
-      - If multiple paths reach a node, keep the highest stage discovered (so any path that crosses
-        a separator will raise the node's final stage).
-      - Any completely disconnected parts default to stage 1.
+    Stage assignment (cycle-safe):
+      - Payload is stage 0.
+      - Entering a neighbor adds that neighbor's 'stage-add' (or inferred 1 for fairing/decoupler/...).
+      - Stage for a node = MIN cumulative bump from payload to that node.
+      - Disconnected parts default to stage 1 (except payload which stays 0).
     """
     n = len(components)
-    stages = [-1] * n  # -1 means unvisited
+    if n == 0:
+        return []
 
-    # Find payload index if not provided
+    # --- find payload index (you said payloads always have "is-payload": truthy) ---
     if payload_index is None:
         for i, comp in enumerate(components):
-            cd = component_data_lookup.get(comp.id, {})
-            attrs = cd.get("attributes", {})
-            if attrs.get("payload_base_income") is not None or attrs.get("is_payload") or cd.get("type") == "payload":
+            attrs = (component_data_lookup.get(comp.id, {}) or {}).get("attributes", {}) or {}
+            if attrs.get("is-payload"):
                 payload_index = i
                 break
         if payload_index is None:
-            payload_index = 0  # fallback
+            payload_index = 0  # last-resort fallback
 
-    # Build adjacency
+    # --- build undirected adjacency, with bounds checks ---
     adj = [[] for _ in range(n)]
     for a, b in connections:
-        a = int(a); b = int(b)
-        if 0 <= a < n and 0 <= b < n:
+        try:
+            a = int(a); b = int(b)
+        except Exception:
+            continue
+        if 0 <= a < n and 0 <= b < n and a != b:
             adj[a].append(b)
             adj[b].append(a)
 
-    # BFS from payload
-    queue = deque()
-    stages[payload_index] = 0
-    queue.append(payload_index)
+    # --- node "bump" cost when ENTERING that node ---
+    def bump_for(idx: int) -> int:
+        cd = component_data_lookup.get(components[idx].id, {}) or {}
+        attrs = cd.get("attributes", {}) or {}
+        bump = int(attrs.get("stage-add", 0))
+        if bump <= 0:
+            typ = str(cd.get("type", "")).lower()
+            # still support type-based inference (harmless now that you added stage-add=1)
+            if typ in ("fairing", "separator", "decoupler", "coupler"):
+                bump = 1
+        return max(0, bump)
 
-    while queue:
-        cur = queue.popleft()
-        cur_stage = stages[cur]
+    # --- Dijkstra on node-weighted graph (cost to *enter* neighbor v) ---
+    INF = 10**9
+    dist = [INF] * n
+    dist[payload_index] = 0
+    heap = [(0, payload_index)]
 
-        for nb in adj[cur]:
-            # Stage bump is applied when ENTERING the neighbor
-            nb_data = component_data_lookup.get(components[nb].id, {}) or {}
-            nb_attrs = nb_data.get("attributes", {}) or {}
-            bump = int(nb_attrs.get("stage-add", 0))  # e.g., separator = 1, others = 0
-            cand_stage = cur_stage + bump
+    while heap:
+        d, u = heapq.heappop(heap)
+        if d != dist[u]:
+            continue
+        for v in adj[u]:
+            cand = d + bump_for(v)
+            if cand < dist[v]:
+                dist[v] = cand
+                heapq.heappush(heap, (cand, v))
 
-            # If unseen or we discovered a higher stage via another path, update
-            if stages[nb] == -1 or cand_stage > stages[nb]:
-                stages[nb] = cand_stage
-                queue.append(nb)
-
-    # Any unconnected bits default to stage 1 (legacy behavior)
+    # --- produce stages; disconnected defaults to 1 except payload stays 0 ---
+    stages = []
     for i in range(n):
-        if stages[i] == -1:
-            stages[i] = 1
+        if dist[i] == INF:
+            stages.append(0 if i == payload_index else 1)
+        else:
+            stages.append(int(dist[i]))
 
     return stages
 
 
+
 def construct_vessel_from_request(shared, player, vessel_request_data) -> Vessel:
-    #GET A REFERENCE TO THE COMPONENT DATA
-    component_data_lookup = shared.component_data
-    components = []
-    total_cost = 0
-    planet_id = vessel_request_data.get("planet", 2)
-    print(f"Constructing vessel for planet ID: {planet_id}")
-    launchpad_data = vessel_request_data.get("launchpad_data", {})
-    launchpad_building_type= launchpad_data.get("type", 2)
-    launchpad_angle = launchpad_data.get("position_angle", 0)
-    vessel_name = vessel_request_data.get("name", "Unnamed Vessel")
-    connections = [(int(a), int(b)) for a, b in vessel_request_data.get("connections", [])]
-    payload_idx = None
+    # Grab the caller's Steam ID once, robustly (you use both names in code)
+    steam_id = int(getattr(player, "steamID", getattr(player, "steam_id", 0)) or 0)
 
-    highest_stage = 0
+    try:
+        # --- existing code starts here (unchanged logic) ---
+        component_data_lookup = shared.component_data
+        components = []
+        total_cost = 0
+        planet_id = vessel_request_data.get("planet", 2)
+        print(f"Constructing vessel for planet ID: {planet_id}")
+        launchpad_data = vessel_request_data.get("launchpad_data", {})
+        launchpad_building_type= launchpad_data.get("type", 2)
+        launchpad_angle = launchpad_data.get("position_angle", 0)
+        vessel_name = vessel_request_data.get("name", "Unnamed Vessel")
+        connections = [(int(a), int(b)) for a, b in vessel_request_data.get("connections", [])]
+        payload_idx = None
 
-    for component in vessel_request_data["vessel_data"]:
-        comp_id = int(component["id"])
-        placement_x = int(component["x"]) - 2500
-        placement_y = int(component["y"])  - 2500 
-        _paint_1 = int(component.get("paint_1") or 0)
-        _paint_2 = int(component.get("paint_2") or 0)
-        
-        component_definition = component_data_lookup.get(comp_id)
-        if component_definition is None:
-            raise ValueError(f"Invalid component ID: {comp_id}")
-        
-        total_cost += component_definition.get("cost", 0)
-        components.append(AttachedVesselComponent(id=comp_id, x=placement_x, y=placement_y, paint1=_paint_1, paint2=_paint_2))
-        
-    if player.money < total_cost:
-        raise ValueError(f"Insufficient funds: cost={total_cost}, player has={player.money}")
-    
-    #Subtract money
-    player.money -= total_cost
-    print("Creating vessel")
+        highest_stage = 0
 
-    payload_idx = detect_payload_index(components, component_data_lookup)
-    stages = calculate_component_stages(components, connections, component_data_lookup, payload_idx)
-    #Create the vessel
-    for comp, st in zip(components, stages):
-        setattr(comp, "stage", st)
+        # --- accumulate required resources across all components ---
+        required_resources: Dict[int, int] = {}
 
-    center_component = components[0]
-    vessel = Vessel(
-        object_type=ObjectType.BASIC_VESSEL,
-        components=components,
-        constructed_by=player.steamID,
-        agency_id=player.agency_id,
-        position=(152_000_000.0, 0.0),
-        velocity=(0, 0),
-        mass=1000.0
-    )
-    vessel.shared=shared
-    vessel.name = vessel_name
-    vessel.launchpad_planet_id = planet_id
-    vessel.stage, vessel.num_stages = max(stages), max(stages) + 1
-    vessel.payload = components[payload_idx].id
+        for component in vessel_request_data["vessel_data"]:
+            comp_id = int(component["id"])
+            placement_x = int(component["x"]) - 2500
+            placement_y = int(component["y"])  - 2500
+            _paint_1 = int(component.get("paint_1") or 0)
+            _paint_2 = int(component.get("paint_2") or 0)
 
-    # Add vessel to its agency
-    agency = shared.agencies.get(player.agency_id)
-    if agency is not None:
-        agency.vessels.append(vessel)
-        print(f"✅ Vessel {vessel.object_id} added to Agency {agency.id64}")
-    else:
-        print(f"⚠️ No agency found with ID {player.agency_id}, vessel not tracked.")
+            component_definition = component_data_lookup.get(comp_id)
+            if component_definition is None:
+                raise ValueError(f"Invalid component ID: {comp_id}")
 
-    chunk_key = (player.galaxy, player.system)
-    chunk = shared.chunk_manager.loaded_chunks.get(chunk_key)
-    vessel.home_chunk = chunk
-    vessel.home_planet = chunk.get_object_by_id(planet_id)
-    #--Initialize launchpad lock--
-    vessel.landed = True
-    vessel.altitude = 0.0
-    vessel.landed_angle_offset = float(launchpad_angle)
-    if vessel.home_planet:
-        R = float(vessel.home_planet.radius_km)
-        # world angle = planet rotation + pad's local angle
-        world_angle_deg = vessel.home_planet.rotation + vessel.landed_angle_offset
-        ang = math.radians(world_angle_deg)
-        cx, cy = vessel.home_planet.position
+            total_cost += component_definition.get("cost", 0)
+            components.append(AttachedVesselComponent(id=comp_id, x=placement_x, y=placement_y, paint1=_paint_1, paint2=_paint_2))
 
-        vessel.position = (cx + R * math.cos(ang), cy + R * math.sin(ang))
-        vessel.rotation = world_angle_deg              # face outward from the center
-        vessel.rotation_velocity = 0.0
-        vessel.velocity = vessel.home_planet.velocity  # move with the planet
+            # read and sum resource_cost per component
+            rc = _coerce_int_keys(component_definition.get("resource_cost", {}))
+            for r_id, amt in rc.items():
+                try:
+                    need = int(amt)
+                except Exception:
+                    continue
+                if need <= 0:
+                    continue
+                required_resources[r_id] = required_resources.get(r_id, 0) + need
 
+        # Money check
+        if player.money < total_cost:
+            raise ValueError(f"Insufficient funds: cost={total_cost}, player has={player.money}")
 
-    # --- end launchpad lock init ---
-    if chunk is not None:
-        chunk.add_object(vessel)
-        print(f"Vessel {vessel.object_id} added to chunk {chunk_key}")
-    else:
-        print(f"⚠️ No chunk found for galaxy/system {chunk_key}, vessel not added to chunk.")
+        # Resource availability check on the launch planet
+        agency = shared.agencies.get(player.agency_id)
+        if agency is None:
+            raise ValueError(f"No agency found for player agency_id={player.agency_id}")
 
+        if required_resources:
+            base_inventories = getattr(agency, "base_inventories", None)
+            if not isinstance(base_inventories, dict):
+                raise ValueError("Agency has no base_inventories dictionary; cannot validate resources.")
 
+            planet_inventory_raw = base_inventories.get(planet_id)
+            if planet_inventory_raw is None:
+                raise ValueError(f"No base inventory found on planet {planet_id}; cannot construct here.")
 
-    return vessel
+            planet_inventory = _coerce_int_keys(planet_inventory_raw)
 
-def detect_payload_index(components, component_data_lookup):
+            shortages = []
+            for r_id, need in required_resources.items():
+                have = int(planet_inventory.get(r_id, 0))
+                if have < need:
+                    shortages.append((r_id, need, have))
+
+            if shortages:
+                detail = ", ".join([f"{rid}: need {need}, have {have}" for rid, need, have in shortages])
+                raise ValueError(f"Insufficient resources on planet {planet_id}: {detail}")
+
+            # deduct resources
+            for r_id, need in required_resources.items():
+                planet_inventory[r_id] = int(planet_inventory.get(r_id, 0)) - need
+            base_inventories[planet_id] = planet_inventory
+
+        # Deduct money and create vessel
+        player.money -= total_cost
+        print("Creating vessel")
+
+        payload_idx = detect_payload_index(components, component_data_lookup)
+        stages = calculate_component_stages(components, connections, component_data_lookup, payload_idx)
+        for comp, st in zip(components, stages):
+            setattr(comp, "stage", st)
+
+        center_component = components[0]
+        vessel = Vessel(
+            object_type=ObjectType.BASIC_VESSEL,
+            components=components,
+            constructed_by=player.steamID,
+            agency_id=player.agency_id,
+            position=(152_000_000.0, 0.0),
+            velocity=(0, 0),
+            mass=1000.0
+        )
+        vessel.shared=shared
+        vessel.name = vessel_name
+        vessel.launchpad_planet_id = planet_id
+        vessel.stage, vessel.num_stages = max(stages), max(stages) + 1
+        vessel.payload = components[payload_idx].id
+
+        # Add vessel to its agency
+        agency = shared.agencies.get(player.agency_id)
+        if agency is not None:
+            agency.vessels.append(vessel)
+            print(f"✅ Vessel {vessel.object_id} added to Agency {agency.id64}")
+        else:
+            print(f"⚠️ No agency found with ID {player.agency_id}, vessel not tracked.")
+
+        chunk_key = (player.galaxy, player.system)
+        chunk = shared.chunk_manager.loaded_chunks.get(chunk_key)
+        vessel.home_chunk = chunk
+        vessel.home_planet = chunk.get_object_by_id(planet_id)
+
+        # Initialize launchpad lock
+        vessel.landed = True
+        vessel.altitude = 0.0
+        vessel.landed_angle_offset = float(launchpad_angle)
+        if vessel.home_planet:
+            R = float(vessel.home_planet.radius_km)
+            world_angle_deg = vessel.home_planet.rotation + vessel.landed_angle_offset
+            ang = math.radians(world_angle_deg)
+            cx, cy = vessel.home_planet.position
+
+            vessel.position = (cx + R * math.cos(ang), cy + R * math.sin(ang))
+            vessel.rotation = world_angle_deg
+            vessel.rotation_velocity = 0.0
+            vessel.velocity = vessel.home_planet.velocity
+
+        if chunk is not None:
+            chunk.add_object(vessel)
+            print(f"Vessel {vessel.object_id} added to chunk {chunk_key}")
+        else:
+            print(f"⚠️ No chunk found for galaxy/system {chunk_key}, vessel not added to chunk.")
+
+        # --- SUCCESS: notify only the requesting player (type 2) ---
+        _notify_player_udp(shared, steam_id, 2, f"{vessel.name} successfully constructed. ")
+
+        return vessel
+
+    except Exception as e:
+        # --- FAILURE: notify only the requesting player (type 1) ---
+        _notify_player_udp(shared, steam_id, 1, f"Construction failed: {e}")
+        raise
+
+def detect_payload_index(components, component_data_lookup) -> int:
     """
-    Finds the index of the payload component by looking for 'is-payload' == truthy
-    in the component's attributes.
+    Return the index of the component whose attributes['is-payload'] is truthy.
+    Raises a clear error if none exists (this should never happen per your data).
     """
     for i, comp in enumerate(components):
-        comp_data = component_data_lookup.get(comp.id, {})
-        attrs = comp_data.get("attributes", {})
-        if attrs.get("is-payload"):  # Any truthy value counts
+        attrs = (component_data_lookup.get(comp.id, {}) or {}).get("attributes", {}) or {}
+        if attrs.get("is-payload"):
             return i
-    return None
+    raise ValueError("No component with attributes['is-payload'] found in vessel.")

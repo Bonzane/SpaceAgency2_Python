@@ -263,6 +263,21 @@ class Game:
 
     # ===== BIG BANG FUNCTIONS ====
 
+    def spawn_asteroid_belt(self, count: int = 400):
+        """
+        Create 'count' asteroid-belt asteroids and return them as a list.
+        Assumes Sun is at (0, 0) and uses gameobjects.AsteroidBeltAsteroid.
+        """
+        asteroids = []
+        for _ in range(int(count)):
+            try:
+                ast = gameobjects.AsteroidBeltAsteroid()
+                asteroids.append(ast)
+            except Exception as e:
+                print(f"⚠️ Failed to spawn an asteroid: {e}")
+        print(f"🪨 Spawned {len(asteroids)} asteroid-belt asteroids")
+        return asteroids
+
     def create_universe_galaxymap(self):
         chunk_path = self.universe_path / "intergalacticMap.sa2map" 
         with open(chunk_path, "w") as file:
@@ -289,9 +304,17 @@ class Game:
         self.neptune = gameobjects.Neptune()
         print("📍 Added Other planets")
 
-        with open(chunk_path, "wb") as file:
-            pickle.dump([self.sun, self.earth, self.luna, self.mercury, self.venus, self.mars, self.jupiter, self.saturn, self.uranus, self.neptune], file)
+        belt_asteroids = self.spawn_asteroid_belt(count=0)
 
+        with open(chunk_path, "wb") as file:
+            pickle.dump(
+                [
+                    self.sun, self.earth, self.luna, self.mercury, self.venus,
+                    self.mars, self.jupiter, self.saturn, self.uranus, self.neptune,
+                    *belt_asteroids
+                ],
+                file
+            )
 
         print("✅ Created Home Chunk")
 

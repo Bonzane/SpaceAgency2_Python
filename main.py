@@ -85,6 +85,8 @@ async def main():
     admins = server_settings.get("administrators", [])
     missioncontrol = server.ServerMissionControl(admins)
     missioncontrol.set_public_name(server_settings.get("server_name", "Commsat"))
+    missioncontrol.main_loop = asyncio.get_running_loop()
+
 
     # Start the posting loop - This task sends the listing server information about your server,
     # So that everyone can find your game! 

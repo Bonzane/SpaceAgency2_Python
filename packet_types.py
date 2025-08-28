@@ -24,6 +24,7 @@ class PacketType(IntEnum):
     VESSEL_CONTROL = 0x0013
     FORCE_RESOLVE_VESSEL = 0x0014
     UPGRADE_BUILDING = 0x0015
+    SELL_RESOURCE = 0x0016
 
 
 class DataGramPacketType(IntEnum):
@@ -36,6 +37,8 @@ class DataGramPacketType(IntEnum):
     VESSEL_STREAM = 0x06
     REGION_CUE = 0x07
     TELESCOPE_SIGHT = 0x08
+    NOTIFICATION = 0x09
+    NOTIFY_VESSEL_DESTROYED = 0x0A
 
 
 class ChatMessage(IntEnum):

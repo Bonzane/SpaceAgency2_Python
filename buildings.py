@@ -97,7 +97,7 @@ class Building:
             
         
 
-    def to_json(self):
+    def to_json(self):            
         return {
             "type": self.type,
             "constructed": self.constructed,

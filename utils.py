@@ -45,3 +45,40 @@ def shortest_delta_deg(current: float, target: float) -> float:
     t = wrap_deg(target)
     d = ((t - c + 180.0) % 360.0) - 180.0
     return d
+
+def _coerce_int_keys(d: Dict[Any, Any]) -> Dict[int, Any]:
+    """Helper: ensure resource ids are ints (handles json string keys)."""
+    if not isinstance(d, dict):
+        return {}
+    out: Dict[int, Any] = {}
+    for k, v in d.items():
+        try:
+            out[int(k)] = v
+        except Exception:
+            # ignore keys that can't be coerced
+            continue
+    return out
+
+def _notify_player_udp(shared, steam_id: int, notif_kind: int, message: str):
+    """
+    Fire-and-forget UDP NOTIFICATION to a single player by Steam ID.
+    Works when called from sync code by scheduling onto the main loop.
+    """
+    udp = getattr(shared, "udp_server", None)
+    if not udp:
+        return
+
+    try:
+        steam_id = int(steam_id)
+    except Exception:
+        return
+
+    coro = udp.notify_steam_ids([steam_id], notif_kind, message)
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(coro)
+    except RuntimeError:
+        # Not on the loop thread — use the server's main loop if you keep a ref to it
+        main_loop = getattr(shared, "main_loop", None)
+        if main_loop and main_loop.is_running():
+            asyncio.run_coroutine_threadsafe(coro, main_loop)
