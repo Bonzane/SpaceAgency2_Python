@@ -147,8 +147,15 @@ class Agency:
     def update_attributes(self) -> None:
         # 1) start from defaults
         attrs = dict(self.shared.agency_default_attributes)
-        for base in self.bases_to_buildings:
-            self.base_inventory_capacities[base] = 0
+
+        # Rebuild capacities from scratch each tick (based on built buildings)
+        self.base_inventory_capacities = {}
+
+        # Seed capacity keys for every planet we currently track a base on
+        for base_planet_id in self.bases_to_buildings.keys():
+            self.base_inventory_capacities[base_planet_id] = 0
+            # keep the inventories dict consistent too
+            self.base_inventories.setdefault(base_planet_id, {})
 
         # 2) fold in effects from each constructed building, up to its level
         for b in self.get_all_buildings():
@@ -161,26 +168,29 @@ class Agency:
                     lvl_req = int(lvl_str)
                 except ValueError:
                     continue
-
-                if b.level < lvl_req:
-                    continue
-                if not isinstance(effects, dict):
+                if b.level < lvl_req or not isinstance(effects, dict):
                     continue
 
-                if "add_satellite_income" in effects:
-                    attrs["satellite_bonus_income"] = attrs.get("satellite_bonus_income", 0) + effects["add_satellite_income"]
+                # --- attribute bonuses ---
+                add_sat = int(effects.get("add_satellite_income", 0))
+                if add_sat:
+                    attrs["satellite_bonus_income"] = attrs.get("satellite_bonus_income", 0) + add_sat
 
-                if "satellite_max_upgrade_tier" in effects:
-                    if effects["satellite_max_upgrade_tier"] > attrs.get("satellite_max_upgrade_tier", 0):
-                        attrs["satellite_max_upgrade_tier"] = effects["satellite_max_upgrade_tier"]
+                max_tier = effects.get("satellite_max_upgrade_tier")
+                if isinstance(max_tier, int) and max_tier > attrs.get("satellite_max_upgrade_tier", 0):
+                    attrs["satellite_max_upgrade_tier"] = max_tier
 
-                if "add_base_storage" in effects:
-                    planet = b.planet_id
-                    self.base_inventory_capacities[planet] += effects["add_base_storage"]
-
+                # --- per-planet storage capacity ---
+                add_storage = int(effects.get("add_base_storage", 0))
+                if add_storage:
+                    planet = int(getattr(b, "planet_id", 0))
+                    # make sure both dicts have the planet key before incrementing
+                    self.base_inventories.setdefault(planet, {})
+                    self.base_inventory_capacities[planet] = self.base_inventory_capacities.get(planet, 0) + add_storage
 
         # 3) commit
         self.attributes = attrs
+
 
 
 

@@ -272,49 +272,111 @@ class Session:
                 print(f"❌ Failed to process CONSTRUCT_VESSEL: {e}")
 
         elif function_code == PacketType.VESSEL_CONTROL:
-            print("received a vessel control")
-            #If it's anything other than request_control, they must be already controlling the vessel.
-            vesselID = await self.reader.readexactly(8)
-            vessel_id = int.from_bytes(vesselID, 'little')
-            _player = self.player
-            chunk_key = (_player.galaxy, _player.system)
-            chunk = self.control_server.shared.chunk_manager.loaded_chunks.get(chunk_key)
-            vessel = chunk.get_object_by_id(vessel_id)
-            control_bytes = await self.reader.readexactly(1)
-            control_key = int.from_bytes(control_bytes, 'little')
-            if(control_key == VesselControl.REQUEST_CONTROL):
-                print(f"🚀 Vessel Control Request for vessel {vessel_id} by player {_player.steamID}")
-                #If the vessel is free to be controlled, take control of it
-                if(vessel.controlled_by == 0):
-                    vessel.controlled_by = _player.steamID
-                    if(_player.controlled_vessel_id != -1):
-                        #Release control of that vessel
-                        old_vessel = chunk.get_object_by_id(_player.controlled_vessel_id)
-                        old_vessel.controlled_by = 0
-                    #Take control of the new vessel
-                    _player.controlled_vessel_id = vessel.object_id
-                    print(f"✅ Player {_player.steamID} gained control of vessel {vessel_id}")
+            try:
+                # Payload header: [u64 vessel_id][u8 action_key]
+                hdr = await self.reader.readexactly(9)
+                vessel_id = int.from_bytes(hdr[0:8], 'little')
+                control_key = hdr[8]
 
-                #TCP RELAY
-                packet = bytearray()
-                packet += PacketType.VESSEL_CONTROL.to_bytes(2, 'little')  # Function code
-                packet += vessel_id.to_bytes(8, 'little')                     # Vessel ID
-                packet += self.steam_id.to_bytes(8, 'little')                  # Now controlled by
-                await self.control_server.broadcast(packet)
+                player = self.player
+                shared = self.control_server.shared
+                cm = shared.chunk_manager
 
-            #Now check if the vessel is controlled by that player
-            else:
-                if(vessel.controlled_by == _player.steamID):
-                    vessel.do_control(control_key)
-                    if( control_key == VesselControl.SET_TELESCOPE_TARGET_ANGLE):
-                        angle = await self.reader.readexactly(4)
-                        angle_value = struct.unpack('<f', angle)[0]
-                        print(f"Set telescope rcs angle to {angle_value}")
-                        vessel.telescope_rcs_angle = angle_value
-                    elif( control_key == VesselControl.SET_SYSTEM_STATE):
-                        system_id = struct.unpack('<H', await self.reader.readexactly(2))[0]
-                        newstate = struct.unpack('<B', await self.reader.readexactly(1))[0]
-                        vessel.set_system_state(system_id, newstate)
+                # Resolve chunk and vessel (try current chunk first, then cross-chunk)
+                chunk_key = (player.galaxy, player.system)
+                chunk = cm.loaded_chunks.get(chunk_key)
+                vessel = chunk.get_object_by_id(vessel_id) if chunk else None
+                if vessel is None:
+                    host_chunk = cm.get_chunk_from_object_id(vessel_id)
+                    if host_chunk:
+                        vessel = host_chunk.get_object_by_id(vessel_id)
+
+                # Helper: how many extra bytes follow this action?
+                def _extra_len(key: int) -> int:
+                    if key == int(VesselControl.SET_TELESCOPE_TARGET_ANGLE):
+                        return 4  # float
+                    if key == int(VesselControl.SET_SYSTEM_STATE):
+                        return 3  # u16 + u8
+                    return 0
+
+                # Helper: drain any extra payload when we can't act, to keep stream in sync
+                async def _drain_if_needed(key: int):
+                    n = _extra_len(key)
+                    if n:
+                        try:
+                            await self.reader.readexactly(n)
+                        except asyncio.IncompleteReadError:
+                            pass
+
+                if vessel is None:
+                    print(f"⚠️ VESSEL_CONTROL: vessel {vessel_id} not found (chunk_key={chunk_key})")
+                    await _drain_if_needed(control_key)
+                    return
+
+                # REQUEST_CONTROL path
+                if control_key == int(VesselControl.REQUEST_CONTROL):
+                    print(f"🚀 Vessel Control Request for vessel {vessel_id} by player {player.steamID}")
+
+                    # If player already controls another vessel, release it safely (even cross-chunk)
+                    old_id = int(getattr(player, "controlled_vessel_id", -1))
+                    if old_id != -1 and old_id != vessel_id:
+                        old_chunk = cm.get_chunk_from_object_id(old_id)
+                        old_v = old_chunk.get_object_by_id(old_id) if old_chunk else None
+                        if old_v is not None:
+                            old_v.controlled_by = 0
+                        # Clear regardless (old might be gone/different system)
+                        player.controlled_vessel_id = -1
+
+                    # Claim if free or already ours
+                    current_owner = int(getattr(vessel, "controlled_by", 0))
+                    if current_owner in (0, int(player.steamID)):
+                        vessel.controlled_by = int(player.steamID)
+                        player.controlled_vessel_id = int(vessel.object_id)
+                        print(f"✅ Player {player.steamID} gained control of vessel {vessel_id}")
+
+                        # Relay over TCP to everyone (same as your pattern)
+                        packet = bytearray()
+                        packet += PacketType.VESSEL_CONTROL.to_bytes(2, 'little')
+                        packet += vessel_id.to_bytes(8, 'little')
+                        packet += int(self.steam_id).to_bytes(8, 'little')  # now controlled by
+                        await self.control_server.broadcast(packet)
+                    else:
+                        # Already owned by someone else; notify just the requester if you like
+                        udp = getattr(shared, "udp_server", None)
+                        if udp:
+                            await udp.notify_steam_ids([player.steamID], 1, "That vessel is already controlled.")
+
+                    # No extra payload for REQUEST_CONTROL → done
+                    return
+
+                # Non-request actions require ownership
+                if int(getattr(vessel, "controlled_by", 0)) != int(player.steamID):
+                    print(f"🛑 Player {player.steamID} tried action {control_key} on vessel {vessel_id} without control")
+                    await _drain_if_needed(control_key)
+                    return
+
+                # Apply the action
+                vessel.do_control(control_key)
+
+                # Read & apply optional payloads
+                if control_key == int(VesselControl.SET_TELESCOPE_TARGET_ANGLE):
+                    raw = await self.reader.readexactly(4)
+                    angle_value = struct.unpack('<f', raw)[0]
+                    vessel.telescope_rcs_angle = angle_value
+                    print(f"🔭 Set telescope RCS angle to {angle_value}")
+
+                elif control_key == int(VesselControl.SET_SYSTEM_STATE):
+                    raw = await self.reader.readexactly(3)  # u16 + u8
+                    system_id = struct.unpack('<H', raw[:2])[0]
+                    new_state = raw[2]
+                    vessel.set_system_state(system_id, new_state)
+
+                # (Other actions like DEPLOY_STAGE etc. have no extra payload)
+
+            except asyncio.IncompleteReadError:
+                print("⚠️ VESSEL_CONTROL: client disconnected mid-read")
+            except Exception as e:
+                print(f"❌ VESSEL_CONTROL error: {e}")
 
         
         elif function_code == PacketType.UPGRADE_BUILDING:
@@ -391,10 +453,103 @@ class Session:
                       f"Player now has {player.money}.")
             else:
                 print(f"❌ Sell failed.")
+  
+
+        elif function_code == PacketType.CRAFT_RESOURCES:
+            # Read fields
+            building_type = struct.unpack('<H', await self.reader.readexactly(2))[0]
+            planet_id     = struct.unpack('<Q', await self.reader.readexactly(8))[0]
+            recipe_name   = await self._read_cstring()
+
+            player, agency = self._get_player_and_agency()
+            if not player or not agency:
+                return
+
+            # Map building type -> crafting table name in game_desc.json
+            facility_key = None
+            try:
+                from buildings import BuildingType
+                if building_type == int(getattr(BuildingType, "CHEMICAL_LAB", -1)):
+                    facility_key = "Chem Lab"
+                elif hasattr(BuildingType, "COLLIDER") and building_type == int(BuildingType.COLLIDER):
+                    facility_key = "Collider"
+            except Exception:
+                pass
+
+            if facility_key is None:
+                print(f"❌ Craft failed: unsupported building_type={building_type}")
+                return
+
+            # (Optional but sensible) Ensure the agency actually has that building on this planet
+            has_building = True
+            bases = getattr(agency, "bases_to_buildings", {})
+            if isinstance(bases, dict):
+                lst = bases.get(int(planet_id), [])
+                has_building = any(int(getattr(b, "type", -1)) == int(building_type)
+                                and getattr(b, "constructed", True)
+                                for b in lst)
+            if not has_building:
+                print(f"❌ Craft failed: no {facility_key} on planet {planet_id}")
+                return
+
+            # Look up the recipe
+            gd = self.control_server.shared.game_description or {}
+            all_tables = gd.get("crafting_recipes", {})
+            table = all_tables.get(facility_key, {})
+            recipe = table.get(recipe_name)
+            if not recipe:
+                print(f"❌ Craft failed: unknown recipe '{recipe_name}' for {facility_key}")
+                return
+
+            inputs  = recipe.get("inputs", {})   # keys may be strings
+            outputs = recipe.get("outputs", {})  # keys may be strings
+
+            # Get the planet inventory
+            base_inventories = getattr(agency, "base_inventories", None)
+            if not isinstance(base_inventories, dict):
+                print("❌ Craft failed: agency has no base_inventories dict")
+                return
+
+            planet_inv_raw = base_inventories.get(int(planet_id))
+            if planet_inv_raw is None:
+                print(f"❌ Craft failed: no inventory on planet {planet_id}")
+                return
+
+            # Coerce keys to ints (matches how you do it elsewhere)
+            from utils import _coerce_int_keys
+            inv = _coerce_int_keys(planet_inv_raw)
+
+            # Check availability
+            shortages = []
+            for rid_s, need in inputs.items():
+                rid = int(rid_s)
+                need = int(need)
+                have = int(inv.get(rid, 0))
+                if have < need:
+                    shortages.append((rid, need, have))
+
+            if shortages:
+                detail = ", ".join(f"{rid}: need {need}, have {have}" for rid, need, have in shortages)
+                print(f"❌ Craft failed: insufficient resources ({detail})")
+                return
+
+            # Apply transaction: consume inputs, then produce outputs
+            for rid_s, need in inputs.items():
+                rid = int(rid_s)
+                inv[rid] = int(inv.get(rid, 0)) - int(need)
+
+            for rid_s, give in outputs.items():
+                rid = int(rid_s)
+                inv[rid] = int(inv.get(rid, 0)) + int(give)
+
+            # Store back
+            base_inventories[int(planet_id)] = inv
+
+            print(f"✅ Crafted '{recipe_name}' at planet {planet_id} via {facility_key}.")
 
         else:
             print(f"🔴 Unknown function code: {function_code}")
-            self.alive = False    
+            self.alive = False  
 
     async def send(self, data: bytes):
         try:
@@ -403,7 +558,15 @@ class Session:
         except Exception as e:
             print(f"Send failed: {e}")
             self.alive = False
-     
+
+    async def _read_cstring(self, max_len: int = 256) -> str:
+        data = await self.reader.readuntil(b'\x00')  # includes the NUL
+        s = data[:-1]  # strip NUL
+        if len(s) > max_len:
+            s = s[:max_len]
+        return s.decode('utf-8', errors='replace')
+
+        
                     
     async def close(self):
         print(f"[-] Closing session for {self.remote_ip}")

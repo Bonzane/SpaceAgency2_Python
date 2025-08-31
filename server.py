@@ -9,7 +9,8 @@ from packet_types import PacketType, DataGramPacketType, ChatMessage
 from typing import Iterable, Sequence, Set, Dict, Tuple
 import aiohttp
 import struct
-import json
+import os, hashlib, copy, json
+
 
 class HttpClient:
     def __init__(self):
@@ -75,6 +76,7 @@ async def update_listing_server(shared_state, http_client, to_url):
 class ServerMissionControl:
 
     def __init__(self, admins):
+        self.game_desc_path = "game_desc.json"
         self.admins = admins
         self.players: Dict[int, Player] = {}
         self.agencies: Dict[int, Agency] = {}
@@ -106,7 +108,7 @@ class ServerMissionControl:
         self.game_resources = None
         self.resource_transfer_rates: dict[int, int] = {}
         self.resource_names: list[str] = []
-        with open("game_desc.json", "r") as game_description_file:
+        with open(self.game_desc_path, "r") as game_description_file:
             self.game_description = json.load(game_description_file)
             self.game_buildings_list = self.game_description.get("buildings")
             self.component_data = {
@@ -137,7 +139,114 @@ class ServerMissionControl:
                 rate = 0
 
             self.resource_names.append(name)
-            self.resource_transfer_rates[idx] = max(0, rate)  # never negative
+            self.resource_transfer_rates[idx] = max(0, rate)
+
+            self._reload_lock = asyncio.Lock()
+            try:
+                st = os.stat(self.game_desc_path)
+                self._game_desc_mtime = st.st_mtime
+            except FileNotFoundError:
+                self._game_desc_mtime = 0.0
+            self._game_desc_hash = self._hash_file(self.game_desc_path)
+
+    def _hash_file(self, path: str) -> str:
+        try:
+            with open(path, "rb") as f:
+                return hashlib.sha256(f.read()).hexdigest()
+        except Exception:
+            return ""
+        
+    async def watch_game_desc(self, interval: float = 2.0):
+        """
+        Periodically checks game_desc.json; if changed, reloads safely and
+        updates dependent state live.
+        """
+        path = self.game_desc_path
+        while True:
+            try:
+                st = os.stat(path)
+                mtime = st.st_mtime
+                if mtime != self._game_desc_mtime:
+                    new_hash = self._hash_file(path)
+                    # protect against quick-save tools that bump mtime without content change
+                    if new_hash != self._game_desc_hash:
+                        print("🔄 Detected change in game_desc.json; reloading...")
+                        # Read & parse atomically under lock; only swap if parse succeeds
+                        async with self._reload_lock:
+                            with open(path, "r", encoding="utf-8") as f:
+                                data = json.load(f)
+                            # minimal validation
+                            if "components" not in data or "buildings" not in data:
+                                raise ValueError("game_desc.json missing 'components' or 'buildings'")
+                            self._apply_game_desc(data)
+                            self._recompute_after_reload()
+                            self._game_desc_mtime = mtime
+                            self._game_desc_hash = new_hash
+                            print("✅ Live reload applied.")
+            except Exception as e:
+                # Never kill the loop; just log and keep the previous config
+                print(f"⚠️ game_desc.json watch error: {e}")
+            await asyncio.sleep(interval)
+
+
+    def _apply_game_desc(self, data: dict):
+        """
+        Swap in new data-driven tables and recompute derived caches.
+        This only runs after JSON has parsed successfully.
+        """
+        # 1) Swap the raw description and primary lookups
+        self.game_description = data
+        self.game_buildings_list = list(data.get("buildings", []))
+        self.component_data = {int(c["id"]): c for c in data.get("components", [])}
+        self.buildings_by_id = {int(b["id"]): b for b in self.game_buildings_list}
+        self.agency_default_attributes = dict(data.get("agency_default_attributes", {}))
+        self.game_resources = list(data.get("resources", []))
+
+        # 2) Recompute resource names/rates (keeps your existing behavior)
+        self.resource_names.clear()
+        self.resource_transfer_rates.clear()
+        for idx, item in enumerate(self.game_resources):
+            if isinstance(item, (list, tuple)) and len(item) >= 2:
+                name = str(item[0]); 
+                try: rate = int(item[1])
+                except (TypeError, ValueError): rate = 0
+            elif isinstance(item, dict):
+                name = str(item.get("name", f"Resource#{idx}"))
+                try: rate = int(item.get("rate", 0))
+                except (TypeError, ValueError): rate = 0
+            else:
+                name, rate = f"Resource#{idx}", 0
+            self.resource_names.append(name)
+            self.resource_transfer_rates[idx] = max(0, rate)
+
+    def _recompute_after_reload(self):
+        """
+        Touch anything that depends on component/building defs.
+        """
+        # Recompute vessel stats and push a FORCE_RESOLVE to clients
+        try:
+            cm = self.chunk_manager
+            if cm and getattr(cm, "loaded_chunks", None):
+                for _ck, chunk in list(cm.loaded_chunks.items()):
+                    for obj in list(getattr(chunk, "objects", {}).values()):
+                        # avoid import cycles; rely on duck-typing
+                        if hasattr(obj, "calculate_vessel_stats"):
+                            obj.calculate_vessel_stats()
+                            # let clients refresh their copy
+                            if hasattr(obj, "_notify_force_resolve"):
+                                obj._notify_force_resolve()
+        except Exception as e:
+            print(f"⚠️ post-reload vessel recompute failed: {e}")
+
+        # Let agencies rebuild any derived attributes
+        try:
+            for ag in self.agencies.values():
+                if hasattr(ag, "update_attributes"):
+                    ag.update_attributes()
+        except Exception as e:
+            print(f"⚠️ post-reload agency attr update failed: {e}")
+
+
 
     def get_next_agency_id(self):
         current = self.next_available_agency_id
@@ -194,7 +303,8 @@ class ControlServer:
     def activate(self):
         print(f"🟢 Control Server Activated on port {self.port}")
         self.active = True
-        asyncio.create_task(self.loop_tasks())  # Start periodic tasks
+        asyncio.create_task(self.loop_tasks())  
+        asyncio.create_task(self.shared.watch_game_desc(interval=2.0))
 
     #Starts the async loop that handles clients
     async def start(self):

@@ -7,8 +7,7 @@ import numpy as np
 from physics import G
 from packet_types import DataGramPacketType
 import struct
-from session import Session
-from vessels import Vessel
+from vessels import Vessel, VesselState
 from regions import maybe_update_vessel_region
 from utils import ambient_temp_simple
 
@@ -35,10 +34,46 @@ class Chunk:
     def is_ready(self) -> bool:
         return self.ready
 
+
     def add_object(self, obj: GameObject):
         self.objects.append(obj)
         self.id_to_object[obj.object_id] = obj
         self.manager.register_object(obj.object_id, self.galaxy, self.system)
+
+        # --- Rehydrate runtime-only references for vessels
+        if isinstance(obj, Vessel):
+            # live refs
+            obj.shared = self.manager.shared
+            obj.home_chunk = self
+
+            # robustly relink the vessel's home_planet to THIS chunk's instance
+            pid = None
+            hp = getattr(obj, "home_planet", None)
+            if hp is not None:
+                pid = getattr(hp, "object_id", None)
+            if not pid:
+                pid = getattr(obj, "launchpad_planet_id", None)  # fallback
+
+            if pid:
+                same_chunk_planet = self.get_object_by_id(int(pid))
+                if same_chunk_planet is not None:
+                    obj.home_planet = same_chunk_planet  # ensure pointer matches this chunk
+
+            cid = int(getattr(obj, "controlled_by", 0) or 0)
+            if cid:
+                p = self.manager.shared.players.get(cid)
+                if not p or not p.session or not p.session.alive:
+                    obj.controlled_by = 0
+                    obj.control_state[VesselState.FORWARD_THRUSTER_ON] = False
+                    obj.control_state[VesselState.REVERSE_THRUSTER_ON] = False
+                    obj.control_state[VesselState.CCW_THRUST_ON] = False
+                    obj.control_state[VesselState.CW_THRUST_ON] = False
+
+            # derived/calculated state that depends on shared/component_data
+            try:
+                obj.calculate_vessel_stats()
+            except Exception as e:
+                print(f"⚠️ Vessel {obj.object_id} calculate_vessel_stats failed: {e}")
 
     def signed_to_unsigned64(self, value: int) -> int:
         return value % (1 << 64)
@@ -265,22 +300,41 @@ class Chunk:
 
     def serialize_chunk(self):
         print(f"💾 Serializing chunk to {self.path}")
+        self.path.parent.mkdir(parents=True, exist_ok=True)
         with open(self.path, 'wb') as f:
-            pickle.dump(self.objects, f)
+            pickle.dump(self.objects, f, protocol=pickle.HIGHEST_PROTOCOL)
 
     def deserialize_chunk(self):
         if not self.path.exists():
             print(f"⚠️ No chunk file found at {self.path}.")
             return
-
         try:
             with open(self.path, 'rb') as f:
                 objs = pickle.load(f)
-                for obj in objs:
+
+            # DEBUG: show what actually came out of the pickle
+            from collections import Counter
+            type_counts = Counter(type(o).__name__ for o in objs)
+            print(f"📦 Chunk {self.galaxy}:{self.system} loaded {len(objs)} objects: "
+                + ", ".join(f"{k}={v}" for k,v in type_counts.items()))
+
+            # Pass 1: add non-vessels first so planets are present
+            for obj in objs:
+                if not isinstance(obj, Vessel):
                     self.add_object(obj)
+
+            # Pass 2: now add vessels; add_object rehydrates & rebuilds stats
+            for obj in objs:
+                if isinstance(obj, Vessel):
+                    self.add_object(obj)
+
         except Exception as e:
             print(f"❌ Failed to load chunk: {e}")
             self.objects = []
+            self.id_to_object.clear()
+
+
+
 
 
     def get_object_by_id(self, obj_id: int) -> Union[PhysicsObject, None]:

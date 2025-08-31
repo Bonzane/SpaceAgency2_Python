@@ -25,6 +25,7 @@ class PacketType(IntEnum):
     FORCE_RESOLVE_VESSEL = 0x0014
     UPGRADE_BUILDING = 0x0015
     SELL_RESOURCE = 0x0016
+    CRAFT_RESOURCES = 0x0017
 
 
 class DataGramPacketType(IntEnum):

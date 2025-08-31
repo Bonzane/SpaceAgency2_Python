@@ -9,6 +9,8 @@ from agency import Agency
 import gameobjects
 import pickle
 import threading
+import json
+from utils import _coerce_int_keys
 
 from chunk_manager import ChunkManager
 
@@ -197,40 +199,50 @@ class Game:
                     agency.primarycolor = int(a.get("primarycolor", 0))
                     agency.secondarycolor = int(a.get("secondarycolor", 0))
                     agency.income_per_second = int(a.get("income_per_second", 0))
-                    agency.base_inventories = a.get("base_inventories", {})
-                    agency.base_inventory_capacities = a.get("base_capacities", {})
+                    raw_inv = a.get("base_inventories", {}) or {}
+                    agency.base_inventories = {
+                        int(pid): {int(rid): int(qty) for rid, qty in inv.items()}
+                        for pid, inv in raw_inv.items()
+                    }
 
-                    # Rebuild buildings
-                    rebuilt = {}
-                    bases_json = a.get("bases_to_buildings", {})
-                    for base_id_str, buildings in bases_json.items():
-                        base_id = int(base_id_str)
-                        rebuilt[base_id] = []
-                        for bj in buildings:
-                            # Prefer a classmethod if you have it:
-                            # b = Building.from_json(bj, self.shared, agency)
-                            # Fallback: minimal constructor using your Building signature
-                            # NOTE: Adjust to your actual Building API.
-                            try:
-                                from buildings import Building, BuildingType
-                                if hasattr(Building, "from_json") and callable(Building.from_json):
-                                    b = Building.from_json(bj, self.shared, agency)
-                                else:
-                                    btype = bj.get("type")
-                                    lvl   = bj.get("level", 1)
-                                    planet= bj.get("planet_id", 0)
-                                    b = Building(BuildingType(btype), self.shared, planet, lvl, agency)
-                                    b.constructed = bool(bj.get("constructed", True))
-                                    if "level" in bj:
-                                        b.level = int(lvl)
-                            except Exception as e:
-                                print(f"⚠️ Could not rebuild a building on base {base_id}: {e}")
-                                continue
-                            rebuilt[base_id].append(b)
+                    raw_caps = a.get("base_capacities", {}) or {}
+                    agency.base_inventory_capacities = {int(pid): int(cap) for pid, cap in raw_caps.items()}
 
-                    if rebuilt:
-                        agency.bases_to_buildings = rebuilt
-                    agency.update_attributes()
+
+                    if not isinstance(agency.base_inventories, dict):
+                        agency.base_inventories = {}
+                    if not isinstance(agency.base_inventory_capacities, dict):
+                        agency.base_inventory_capacities = {}
+
+
+                  # Rebuild buildings
+                rebuilt = {}
+                bases_json = a.get("bases_to_buildings", {}) or {}
+                for base_id_str, buildings in bases_json.items():
+                    base_id = int(base_id_str)  # this IS the planet id
+                    rebuilt[base_id] = []
+                    for bj in buildings:
+                        try:
+                            from buildings import Building, BuildingType
+                            btype = int(bj.get("type", 0))
+                            angle = float(bj.get("position_angle", 0.0))  # saved by to_json()
+
+                            # ctor: (type, shared, position_angle, base_id, agency)
+                            b = Building(BuildingType(btype), self.shared, angle, base_id, agency)
+
+                            b.constructed = bool(bj.get("constructed", True))
+                            b.level = int(bj.get("level", 1))
+                            b.construction_progress = int(bj.get("construction_progress", 0))
+                        except Exception as e:
+                            print(f"⚠️ Could not rebuild a building on base {base_id}: {e}")
+                            continue
+                        rebuilt[base_id].append(b)
+
+                if rebuilt:
+                    agency.bases_to_buildings = rebuilt
+
+                # Recompute attributes (storage capacity, unlocks, etc.)
+                agency.update_attributes()
 
                 print("✅ Loaded agencies")
 
@@ -259,6 +271,24 @@ class Game:
                     pl.controlled_vessel_id = int(pj.get("controlled_vessel_id", -1))
 
                 print("✅ Loaded players")
+
+                # Re-link vessels to agencies and reattach live refs
+                from vessels import Vessel
+                for ag in self.shared.agencies.values():
+                    ag.vessels = []
+
+                cm = self.chunk_manager
+                for chunk in cm.loaded_chunks.values():
+                    for obj in chunk.objects:
+                        if isinstance(obj, Vessel):
+                            ag = self.shared.agencies.get(int(getattr(obj, "agency_id", 0)))
+                            if ag is not None:
+                                ag.vessels.append(obj)
+                            # reattach runtime refs
+                            obj.shared = self.shared
+                            obj.home_chunk = chunk
+                            # (optional) ensure the CM index knows about this object_id → (galaxy, system)
+                            cm.register_object(obj.object_id, chunk.galaxy, chunk.system)
 
 
     # ===== BIG BANG FUNCTIONS ====

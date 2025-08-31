@@ -101,11 +101,15 @@ class Vessel(PhysicsObject):
     current_temperature_c: float = 20.0
     thermal_resistance: float = 100
     deployment_ready: bool = False
+    unland_grace_time_s: float = 0.0
+
     #---Telescopes---
     has_telescope_rcs: bool = False
     telescope_rcs_angle: float = 0.0
     telescope_targets: List[GameObject] = field(default_factory=list, repr=False)
     telescope_targets_in_sight: List[GameObject] = field(default_factory=list, repr=False)
+    telescope_range_km: float = AU_KM
+    telescope_fov_deg: float = 60.0
 
     fuel_by_stage: Dict[int, float] = field(default_factory=dict, repr=False)
     capacity_by_stage: Dict[int, float] = field(default_factory=dict, repr=False)
@@ -120,6 +124,34 @@ class Vessel(PhysicsObject):
 
     def __post_init__(self):
         print("VESSEL SPAWNED")
+
+
+
+    def __getstate__(self):
+        # Copy all fields, then drop runtime-only / non-serializable refs
+        state = self.__dict__.copy()
+
+        # hard runtime links (hold sockets indirectly)
+        state['shared'] = None
+        state['home_chunk'] = None
+
+        # ephemeral / recomputable
+        state['telescope_targets'] = []
+        state['telescope_targets_in_sight'] = []
+        state['strongest_gravity_source'] = None  # will be recomputed by Chunk
+
+        return state
+
+    def __setstate__(self, state):
+        self.__dict__.update(state)
+        # re-init runtime fields to safe defaults; Chunk will reattach them after load
+        self.shared = None
+        self.home_chunk = None
+        if self.telescope_targets is None:
+            self.telescope_targets = []
+        if self.telescope_targets_in_sight is None:
+            self.telescope_targets_in_sight = []
+
 
     def calculate_vessel_stats(self):
         component_data_lookup = self.shared.component_data
@@ -184,9 +216,6 @@ class Vessel(PhysicsObject):
             if(attrs.get("telescope-rcs", False)):
                 self.has_telescope_rcs = True
 
-            if(comp.id == Components.SPACE_TELESCOPE):
-                game = self.shared.game
-                self.telescope_targets = [game.sun, game.luna, game.mars, game.venus]
 
             #FOR EVERY ATTACHED COMPONENT:
             if st <= self.stage:
@@ -242,6 +271,36 @@ class Vessel(PhysicsObject):
         dry = sum(component_data_lookup.get(comp.id, {}).get("mass", 0.0) for comp in self.components)
         attached_fuel = sum(v for s, v in self.fuel_by_stage.items() if s <= self.stage)
         return dry + attached_fuel
+
+    def _iter_planets_in_same_system(self):
+        """Yield Planet objects in our current chunk/system."""
+        from gameobjects import Planet
+        chunk = getattr(self, "home_chunk", None)
+        if not chunk:
+            return []
+        objs = []
+
+        # Be defensive about chunk storage structure
+        for attr in ("objects", "objects_by_id", "id_to_object", "object_lookup"):
+            container = getattr(chunk, attr, None)
+            if isinstance(container, dict):
+                objs.extend(container.values())
+            elif isinstance(container, (list, tuple, set)):
+                objs.extend(container)
+
+        # Deduplicate just in case we appended from multiple containers
+        seen = set()
+        planets = []
+        for o in objs:
+            if o is None or not isinstance(o, Planet):
+                continue
+            oid = getattr(o, "object_id", id(o))
+            if oid in seen:
+                continue
+            seen.add(oid)
+            planets.append(o)
+        return planets
+
 
 
     def add_system(self, sys_type: Systems, amount: float, draw: float, active: bool = True):
@@ -339,6 +398,10 @@ class Vessel(PhysicsObject):
 
     
     def do_control(self, control):
+        try:
+            control = VesselControl(control)
+        except Exception:
+            return  # unknown control byte
         match control:
             case VesselControl.FORWARD_THRUST_ENGAGE:
                 self.control_state[VesselState.FORWARD_THRUSTER_ON] = True
@@ -475,27 +538,35 @@ class Vessel(PhysicsObject):
                 sess = getattr(controlling_player, "session", None)
                 if not sess or not sess.alive:
                     return
+
                 self.telescope_targets_in_sight.clear()
-                for obj in self.telescope_targets:
-                    if obj is None:
-                        continue
-                    # Direction from vessel to target
-                    dx = obj.position[0] - self.position[0]
-                    dy = obj.position[1] - self.position[1]
-                    if dx == 0.0 and dy == 0.0:
-                        continue  # same position; undefined direction
 
-                    to_target_deg = math.degrees(math.atan2(dy, dx))
-                    # Smallest signed delta (uses your helper)
-                    delta = shortest_delta_deg(-self.rotation, to_target_deg)
+                # Scan all planets in this system
+                candidates = self._iter_planets_in_same_system()
+                if candidates:
+                    half_fov = max(0.0, float(self.telescope_fov_deg) * 0.5)
+                    rx, ry = self.position
 
-                    if abs(delta) < 30.0:  # strictly less than 30°
-                        self.telescope_targets_in_sight.append(obj)
+                    for obj in candidates:
+                        # Range gate
+                        dx = obj.position[0] - rx
+                        dy = obj.position[1] - ry
+                        dist_km = math.hypot(dx, dy)
+                        if dist_km > float(self.telescope_range_km):
+                            continue
 
+                        # FOV gate (keep your existing orientation convention)
+                        to_target_deg = math.degrees(math.atan2(dy, dx))
+                        delta = shortest_delta_deg(-self.rotation, to_target_deg)
+                        if abs(delta) <= half_fov:
+                            self.telescope_targets_in_sight.append(obj)
+
+                # Send what we see (object IDs only, packet format unchanged)
                 if sess and sess.alive and getattr(sess, "udp_port", None):
                     addr = (sess.remote_ip, sess.udp_port)
                     packet = self.shared.udp_server.build_telescope_sight_packet(self)
                     self.shared.udp_server.transport.sendto(packet, addr)
+
 
 
 
@@ -535,6 +606,18 @@ class Vessel(PhysicsObject):
         vx, vy = self.velocity
         pvx, pvy = body.velocity
         return math.hypot(vx - pvx, vy - pvy)
+
+    def _surface_g_km_s2(self) -> float:
+        # Prefer explicit property if your Planet has one
+        g = getattr(self.home_planet, "surface_g_km_s2", None)
+        if g is not None:
+            return float(g)
+        # Otherwise compute from mass & radius
+        try:
+            return G * float(self.home_planet.mass) / (float(self.home_planet.radius_km) ** 2)
+        except Exception:
+            return 0.0
+
 
     def _maybe_begin_landing_when_matching_velocity(self, prev_rel: float, post_rel: float):
         if self.landed or not self.home_planet:
@@ -711,52 +794,74 @@ class Vessel(PhysicsObject):
         if self.landed or not self.home_planet:
             return
 
-        # --- constants (tweak to taste) ---
-        Z_GRAVITY_KM_S2      = 0.001   # ~9.8 m/s^2 downward when in atmosphere
-        THRUST_LIFT_ACCEL    = 0.130   # scales how much forward thrust raises z-velocity
-        MAX_SAFE_TOUCHDOWN   = 1.00   # km/s (≈30 m/s) threshold between land vs explode
-
         atm_height = max(1e-6, float(self.home_planet.atmosphere_km))
         in_atmo    = self.altitude < atm_height - 1e-6
 
-        # How much "lift" your forward thrust provides (same inputs you already used)
-        # Keep your atmospheric fade so thrust matters less near the top.
+        # Lift from forward thrust (unchanged)
         acc_proxy = self.last_forward_thrust_kN / max(self.mass, 1.0)
-        alt_norm = max(0.0, min(1.0, self.altitude / atm_height))  # 0=ground, 1=top
-        dens = 1.0 - alt_norm                                      # 1 at ground → 0 at top
-
-        # Thrust effectiveness: full near ground, fades to BASE near the top
-        BASE = 0.5        # min effectiveness at top of atmosphere (0..1)
-        FADE_SHAPE = 2.0  # steeper fade near the top (1 = linear)
+        alt_norm = max(0.0, min(1.0, self.altitude / atm_height))
+        dens = 1.0 - alt_norm
+        BASE = 0.5
+        FADE_SHAPE = 2.0
         atmos_factor = BASE + (1.0 - BASE) * (dens ** FADE_SHAPE)
+        THRUST_LIFT_ACCEL = 0.130
+        a_up = (THRUST_LIFT_ACCEL * acc_proxy * atmos_factor) if in_atmo else 0.0
+        MAX_SAFE_TOUCHDOWN = 1.2
 
-        # Vertical acceleration: thrust lift minus constant downward accel in atmo
-        a_up   = THRUST_LIFT_ACCEL * acc_proxy * atmos_factor
-        a_down = Z_GRAVITY_KM_S2 if in_atmo else 0.0
-        a_z    = a_up - a_down
 
-        # Integrate z-velocity, then altitude
+        # Use the body’s own gravity near the surface (in-atmo only, to avoid double-counting)
+        g_surface = self._surface_g_km_s2()
+        a_down = (g_surface * 0.1) if in_atmo else 0.0
+
+        # Vacuum descent damper: gently decay z-velocity toward 0 (tunable per body)
+        if not in_atmo:
+            tau = float(getattr(self.home_planet, "vacuum_descent_tau", 12.0))  # seconds
+            if tau > 1e-6:
+                self.z_velocity += (-self.z_velocity) * (1.0 - math.exp(-dt / tau))
+
+        # Integrate vertical motion
+        a_z = a_up - a_down
         self.z_velocity += a_z * dt
         self.altitude   += self.z_velocity * dt
-        self.altitude_delta = self.z_velocity  # for telemetry (was "rate of change")
+        self.altitude_delta = self.z_velocity
 
-        # Clamp at top of atmosphere; stop climbing further
+        # Clamp at top of atmosphere
         if self.altitude >= atm_height:
             self.altitude = atm_height
             if self.z_velocity > 0.0:
                 self.z_velocity = 0.0
 
+        # --- Count down the takeoff grace window
+        if getattr(self, "unland_grace_time_s", 0.0) > 0.0:
+            self.unland_grace_time_s = max(0.0, self.unland_grace_time_s - dt)
+
         # Touchdown check
         if self.altitude <= 0.0:
-            impact_speed = abs(self.z_velocity)
+            # clamp to ground
             self.altitude = 0.0
-            self.z_velocity = 0.0
 
-            if impact_speed > MAX_SAFE_TOUCHDOWN:
-                print(f"💥 Hard landing: impact {impact_speed:.3f} km/s -> destroy")
-                self.destroy()
+            # If we're within the grace period, don't land or explode yet.
+            if getattr(self, "unland_grace_time_s", 0.0) > 0.0:
+                # keep upward motion if any; kill tiny downward jitter
+                if self.z_velocity < 0.0:
+                    self.z_velocity = 0.0
+                return
+
+            # Only treat as an impact if actually descending.
+            if self.z_velocity < 0.0:
+                impact_speed = -self.z_velocity  # downward only, km/s
+                self.z_velocity = 0.0
+
+                if impact_speed > MAX_SAFE_TOUCHDOWN:
+                    print(f"💥 Hard landing: impact {impact_speed:.3f} km/s -> destroy")
+                    self.destroy()
+                else:
+                    self.land()
             else:
-                self.land()
+                # We're stationary or moving up at the ground plane:
+                # do not force a land/destroy; let the next tick lift us cleanly.
+                self.z_velocity = max(0.0, self.z_velocity)
+
 
             
     def _clamp01(self, x: float) -> float:
@@ -849,6 +954,99 @@ class Vessel(PhysicsObject):
         self.z_velocity = 0.0
         self.deployment_ready = False
 
+    def _trigger_build_on_land_if_any(self):
+        """
+        If any component has attributes["build-on-land"] == [planet_name, building_type]
+        and we just landed on that planet, auto-place the building (if missing)
+        and unlock its blueprint for this agency. Fires only once per vessel.
+        """
+        if getattr(self, "_build_on_land_fired", False):
+            return
+        if not self.home_planet or not self.shared:
+            return
+
+        planet_name = str(getattr(self.home_planet, "name", "")).strip()
+        if not planet_name:
+            return
+
+        # Find the first component declaring build-on-land
+        target = None
+        for comp in self.components:
+            cd = (self.shared.component_data.get(comp.id, {}) or {})
+            attrs = (cd.get("attributes", {}) or {})
+            bol = attrs.get("build-on-land")
+            if isinstance(bol, (list, tuple)) and len(bol) == 2:
+                target = (str(bol[0]).strip(), int(bol[1]))
+                break
+
+        if not target:
+            return
+
+        wanted_name, building_type = target
+        if planet_name.lower() != wanted_name.lower():
+            return
+
+        agency = self.shared.agencies.get(self.agency_id)
+        if not agency:
+            return
+
+        base_id = int(getattr(self.home_planet, "object_id", 0))
+        if base_id == 0:
+            return
+
+        # Already present?
+        existing = False
+        for b in agency.bases_to_buildings.get(base_id, []):
+            if int(getattr(b, "type", -1)) == building_type:
+                existing = True
+                break
+
+        if existing:
+            self._build_on_land_fired = True
+            return
+
+        try:
+            from buildings import Building, BuildingType
+
+            # Place at the landing longitude (nice touch), mark constructed
+            angle = float(getattr(self, "landed_angle_offset", 0.0))
+            new_building = Building(BuildingType(int(building_type)), self.shared, angle, base_id, agency)
+            new_building.constructed = True
+
+            agency.add_building_to_base(base_id, new_building)
+
+            # “Unlock” the blueprint for the agency for future use
+            # Prefer an Agency API if you have one; otherwise keep a simple set.
+            if hasattr(agency, "unlock_building_type") and callable(agency.unlock_building_type):
+                agency.unlock_building_type(int(building_type))
+            else:
+                if not hasattr(agency, "unlocked_buildings") or agency.unlocked_buildings is None:
+                    agency.unlocked_buildings = set()
+                agency.unlocked_buildings.add(int(building_type))
+
+            # Recompute any derived caps/bonuses
+            if hasattr(agency, "update_attributes"):
+                agency.update_attributes()
+
+            # Notify the agency (async-safe scheduling)
+            udp = getattr(self.shared, "udp_server", None)
+            if udp:
+                bname = (self.shared.buildings_by_id.get(int(building_type), {}) or {}).get("name", f"Building {building_type}")
+                msg = f"{agency.name} established {bname} on {planet_name} (mission auto-build)"
+                try:
+                    loop = getattr(self.shared, "main_loop", None)
+                    if loop and loop.is_running():
+                        import asyncio
+                        asyncio.run_coroutine_threadsafe(udp.notify_agency(agency.id64, 2, msg), loop)
+                except Exception as e:
+                    print(f"⚠️ notify_agency schedule failed: {e}")
+
+            print(f"✅ Auto-built building {building_type} on {planet_name} for agency {agency.id64}")
+        except Exception as e:
+            print(f"⚠️ build-on-land mission hook failed: {e}")
+
+        self._build_on_land_fired = True
+
 
     def land(self):
         self.landed = True
@@ -856,6 +1054,9 @@ class Vessel(PhysicsObject):
         self.z_velocity = 0.0
         self.rotation_velocity = 0.0
         self.velocity = self.home_planet.velocity
+
+        self._trigger_build_on_land_if_any()
+
 
         # Math-world angle at the touch point (atan2 is CCW, +y up)
         dx = self.position[0] - self.home_planet.position[0]
@@ -899,6 +1100,8 @@ class Vessel(PhysicsObject):
         self.landed = False
         self.altitude = 0.1  # start just above the ground
         self.z_velocity = 0.2
+        self.unland_grace_time_s = 0.75  # <— 3/4s grace
+
 
 
     def _nozzle_local_point(self, component, pt):
@@ -1092,21 +1295,25 @@ class Vessel(PhysicsObject):
 
 
 
-    def apply_thrust_at(self, local_point: Tuple[float, float], direction_angle_deg: float, thrust_kN: float, dt: float):
+    def apply_thrust_at(self, local_point, direction_angle_deg, thrust_kN, dt):
         if thrust_kN <= 0 or self.mass <= 0:
             return
-        scaled_dt = dt / self.shared.gamespeed
-        thrust = thrust_kN * 1000 * self.shared.global_thrust_multiplier
+        # guard gamespeed
+        gs = float(getattr(self.shared, "gamespeed", 1.0))
+        scaled_dt = dt / max(1e-9, gs)
+
+        thrust_N = thrust_kN * 1000.0   # multiplier already applied upstream
 
         angle_rad = math.radians(self.rotation + direction_angle_deg)
-        fx = thrust* math.cos(angle_rad)
-        fy = thrust * math.sin(angle_rad )
+        fx = thrust_N * math.cos(angle_rad)
+        fy = thrust_N * math.sin(angle_rad)
 
         dvx = (fx / self.mass) * scaled_dt
         dvy = (fy / self.mass) * scaled_dt
         vx, vy = self.velocity
-
         self.velocity = (vx - dvy, vy - dvx)
+
+
 
         local_dx = local_point[0] - self.center_of_mass[0]
         local_dy = local_point[1] - self.center_of_mass[1]
@@ -1296,15 +1503,16 @@ def calculate_component_stages(components, connections, component_data_lookup, p
     """
     Stage assignment (cycle-safe):
       - Payload is stage 0.
-      - Entering a neighbor adds that neighbor's 'stage-add' (or inferred 1 for fairing/decoupler/...).
-      - Stage for a node = MIN cumulative bump from payload to that node.
+      - stage-add      : added when ENTERING a node (that node belongs to the higher stage).
+      - stage-pre-add  : added when LEAVING a node (that node stays lower; successors get bumped).
+      - Stage for a node = MIN cumulative sum of (pre-add on edges traversed so far) + (add on the node).
       - Disconnected parts default to stage 1 (except payload which stays 0).
     """
     n = len(components)
     if n == 0:
         return []
 
-    # --- find payload index (you said payloads always have "is-payload": truthy) ---
+    # --- find payload index (expects attributes['is-payload'])
     if payload_index is None:
         for i, comp in enumerate(components):
             attrs = (component_data_lookup.get(comp.id, {}) or {}).get("attributes", {}) or {}
@@ -1312,9 +1520,9 @@ def calculate_component_stages(components, connections, component_data_lookup, p
                 payload_index = i
                 break
         if payload_index is None:
-            payload_index = 0  # last-resort fallback
+            payload_index = 0
 
-    # --- build undirected adjacency, with bounds checks ---
+    # --- undirected adjacency (bounds-checked)
     adj = [[] for _ in range(n)]
     for a, b in connections:
         try:
@@ -1325,19 +1533,25 @@ def calculate_component_stages(components, connections, component_data_lookup, p
             adj[a].append(b)
             adj[b].append(a)
 
-    # --- node "bump" cost when ENTERING that node ---
-    def bump_for(idx: int) -> int:
+    # --- helpers
+    def stage_add(idx: int) -> int:
         cd = component_data_lookup.get(components[idx].id, {}) or {}
         attrs = cd.get("attributes", {}) or {}
         bump = int(attrs.get("stage-add", 0))
         if bump <= 0:
             typ = str(cd.get("type", "")).lower()
-            # still support type-based inference (harmless now that you added stage-add=1)
+            # keep your inference for fairings/decouplers etc.
             if typ in ("fairing", "separator", "decoupler", "coupler"):
                 bump = 1
         return max(0, bump)
 
-    # --- Dijkstra on node-weighted graph (cost to *enter* neighbor v) ---
+    def stage_pre_add(idx: int) -> int:
+        cd = component_data_lookup.get(components[idx].id, {}) or {}
+        attrs = cd.get("attributes", {}) or {}
+        pre = int(attrs.get("stage-pre-add", 0))
+        return max(0, pre)
+
+    # --- Dijkstra with edge weight: pre_add(u) + add(v)
     INF = 10**9
     dist = [INF] * n
     dist[payload_index] = 0
@@ -1347,20 +1561,20 @@ def calculate_component_stages(components, connections, component_data_lookup, p
         d, u = heapq.heappop(heap)
         if d != dist[u]:
             continue
+        pu = stage_pre_add(u)
         for v in adj[u]:
-            cand = d + bump_for(v)
+            cand = d + pu + stage_add(v)
             if cand < dist[v]:
                 dist[v] = cand
                 heapq.heappush(heap, (cand, v))
 
-    # --- produce stages; disconnected defaults to 1 except payload stays 0 ---
+    # --- produce stages; disconnected -> 1 (payload stays 0)
     stages = []
     for i in range(n):
         if dist[i] == INF:
             stages.append(0 if i == payload_index else 1)
         else:
             stages.append(int(dist[i]))
-
     return stages
 
 

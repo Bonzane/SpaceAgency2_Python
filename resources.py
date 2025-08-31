@@ -28,6 +28,7 @@ class Resource(IntEnum):
     QUANTUM_DUST = 24
     NEBULA_GAS = 25
     OORT_ICE = 26
+    TRANSPARENT_ALUMINUM = 27
     
 
     

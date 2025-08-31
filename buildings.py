@@ -9,6 +9,10 @@ class BuildingType(IntEnum):
     STORAGE_FACIITY = 4
     MINING_RIG = 5
     RECEPTION_DISH = 6
+    PARTICLE_COLLIDER = 7
+    INTEFEROMETER = 8
+    CHEMICAL_LAB = 9
+    MOON_HQ = 10
 
 
 class Building:
