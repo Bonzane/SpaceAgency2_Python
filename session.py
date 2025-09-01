@@ -271,6 +271,71 @@ class Session:
             except Exception as e:
                 print(f"❌ Failed to process CONSTRUCT_VESSEL: {e}")
 
+        elif function_code == PacketType.LEAVE_AGENCY:
+            # who is asking?
+            player = self.control_server.get_player_by_steamid(self.steam_id)
+            if not player:
+                print("⚠️ LEAVE_AGENCY: no player bound to session")
+                return
+
+            shared = self.control_server.shared
+            udp = getattr(shared, "udp_server", None)
+
+            # find current agency
+            ag = shared.agencies.get(getattr(player, "agency_id", 0))
+            if not ag:
+                print(f"⚠️ LEAVE_AGENCY: player {player.steamID} not in a valid agency")
+                # polite feedback to the requester only
+                if udp:
+                    await udp.notify_steam_ids([int(player.steamID)], 0, "You are not in an agency.")
+                return
+
+            # remove membership
+            try:
+                ag.remove_player(int(player.steamID))
+            except Exception as e:
+                print(f"⚠️ LEAVE_AGENCY: failed to remove {player.steamID} from agency {ag.id64}: {e}")
+
+            # clear player's agency
+            player.agency_id = 0
+
+            # craft the notification "{ID} left the agency"
+            msg = f"{int(self.steam_id)} left the agency"
+
+            # notify the leaver
+            if udp:
+                try:
+                    await udp.notify_steam_ids([int(self.steam_id)], 0, msg)  # kind 0 = generic
+                except Exception as e:
+                    print(f"⚠️ notify_steam_ids(leaver) failed: {e}")
+
+            # notify remaining members of that agency
+            if udp:
+                try:
+                    await udp.notify_agency(int(ag.id64), 0, msg)  # leaver already removed, so they won't get this
+                except Exception as e:
+                    print(f"⚠️ notify_agency(remaining) failed: {e}")
+
+            # update everyone’s view of player→agency mapping (your existing packet)
+            try:
+                await self.control_server.tell_everyone_player_joined(self.steam_id)  # optional: re-announce presence
+                await asyncio.sleep(0.05)
+                await self.control_server.tell_everyone_player_left(self.steam_id)    # optional: if you rely on join/leave
+                await asyncio.sleep(0.05)
+                await self.control_server.tell_everyone_info_about_everyone()         # authoritative refresh
+            except Exception as e:
+                print(f"⚠️ LEAVE_AGENCY: refresh broadcast failed: {e}")
+
+            # If you implemented the JSON agencies snapshot/list, broadcast it too so UIs get the new roster.
+            try:
+                if hasattr(self.control_server, "broadcast_info_about_agencies"):
+                    await self.control_server.broadcast_info_about_agencies()
+                elif hasattr(self.control_server, "send_list_of_agencies"):
+                    await self.control_server.send_list_of_agencies()  # legacy u16/u8 list
+            except Exception as e:
+                print(f"⚠️ LEAVE_AGENCY: agencies broadcast failed: {e}")
+
+
         elif function_code == PacketType.VESSEL_CONTROL:
             try:
                 # Payload header: [u64 vessel_id][u8 action_key]
@@ -377,6 +442,106 @@ class Session:
                 print("⚠️ VESSEL_CONTROL: client disconnected mid-read")
             except Exception as e:
                 print(f"❌ VESSEL_CONTROL error: {e}")
+
+        elif function_code == PacketType.JOIN_PUBLIC_AGENCY:
+            try:
+                # Payload: [u64 agency_id]
+                target_agency_id = int.from_bytes(await self.reader.readexactly(8), "little")
+
+                # Resolve player + shared bits
+                player = self.control_server.get_player_by_steamid(self.steam_id)
+                if not player:
+                    print("⚠️ JOIN_AGENCY: no bound player for this session")
+                    return
+
+                shared = self.control_server.shared
+                udp = getattr(shared, "udp_server", None)
+
+                # Validate agency
+                target_agency = shared.agencies.get(target_agency_id)
+                if not target_agency:
+                    print(f"❌ JOIN_AGENCY: agency {target_agency_id} does not exist")
+                    if udp:
+                        await udp.notify_steam_ids([int(player.steamID)], 1, "Join failed: agency does not exist.")
+                    return
+
+                if not bool(getattr(target_agency, "is_public", False)):
+                    print(f"❌ JOIN_AGENCY: agency {target_agency_id} is private")
+                    if udp:
+                        await udp.notify_steam_ids([int(player.steamID)], 1, "Join failed: that agency is private.")
+                    return
+
+                # Already in that agency?
+                if int(getattr(player, "agency_id", 0)) == int(target_agency_id):
+                    if udp:
+                        await udp.notify_steam_ids([int(player.steamID)], 0, "You are already in that agency.")
+                    return
+
+                # If currently in another agency, remove from it and notify that agency
+                prev_agency_id = int(getattr(player, "agency_id", 0) or 0)
+                if prev_agency_id in shared.agencies:
+                    prev_agency = shared.agencies[prev_agency_id]
+                    try:
+                        prev_agency.remove_player(int(player.steamID))
+                    except Exception as e:
+                        print(f"⚠️ JOIN_AGENCY: failed to remove {player.steamID} from {prev_agency_id}: {e}")
+                    player.agency_id = 0  # clear before joining new
+
+                    # Notify leaver + previous members
+                    if udp:
+                        leave_msg = f"{int(self.steam_id)} left the agency"
+                        try:
+                            await udp.notify_steam_ids([int(player.steamID)], 0, leave_msg)
+                        except Exception as e:
+                            print(f"⚠️ notify_steam_ids (leave) failed: {e}")
+                        try:
+                            await udp.notify_agency(int(prev_agency.id64), 0, leave_msg)
+                        except Exception as e:
+                            print(f"⚠️ notify_agency (leave) failed: {e}")
+
+                # Add to the new (public) agency
+                try:
+                    target_agency.add_player(int(player.steamID))
+                except Exception as e:
+                    print(f"❌ JOIN_AGENCY: add_player failed: {e}")
+                    if udp:
+                        await udp.notify_steam_ids([int(player.steamID)], 1, "Join failed: server error.")
+                    return
+
+                player.agency_id = int(target_agency.id64)
+
+                # Notify success to the joiner and to the agency members
+                if udp:
+                    join_msg = f"{int(self.steam_id)} joined the agency"
+                    try:
+                        await udp.notify_steam_ids([int(player.steamID)], 0, join_msg)
+                    except Exception as e:
+                        print(f"⚠️ notify_steam_ids (join) failed: {e}")
+                    try:
+                        await udp.notify_agency(int(target_agency.id64), 0, join_msg)
+                    except Exception as e:
+                        print(f"⚠️ notify_agency (join) failed: {e}")
+
+                # Refresh everyone’s player→agency mapping
+                try:
+                    await self.control_server.tell_everyone_info_about_everyone()
+                except Exception as e:
+                    print(f"⚠️ broadcast INFO_ABOUT_PLAYERS failed: {e}")
+
+                # Refresh agency rosters/snapshot for UIs (use whichever you implemented)
+                try:
+                    if hasattr(self.control_server, "broadcast_info_about_agencies"):
+                        await self.control_server.broadcast_info_about_agencies()
+                    elif hasattr(self.control_server, "send_list_of_agencies"):
+                        await self.control_server.send_list_of_agencies()
+                except Exception as e:
+                    print(f"⚠️ agencies refresh failed: {e}")
+
+            except asyncio.IncompleteReadError:
+                print("⚠️ JOIN_AGENCY: client disconnected mid-read")
+            except Exception as e:
+                print(f"❌ JOIN_AGENCY error: {e}")
+
 
         
         elif function_code == PacketType.UPGRADE_BUILDING:

@@ -390,3 +390,13 @@ class Agency:
         payload = json.dumps(data, separators=(',', ':')).encode('utf-8')
         # [opcode:u16][length:u32][payload]
         return struct.pack('<HI', PacketType.AGENCY_GAMESTATE, len(payload)) + payload
+
+    def to_json(self) -> dict:
+        # Minimal snapshot: id, name, public, members (steam IDs only)
+        return {
+            "id": int(self.id64),
+            "name": self.name,
+            "public": bool(self.is_public),
+            "members": [int(sid) for sid in self.members],  # steam IDs only
+        }
+

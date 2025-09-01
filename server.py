@@ -10,6 +10,7 @@ from typing import Iterable, Sequence, Set, Dict, Tuple
 import aiohttp
 import struct
 import os, hashlib, copy, json
+import time
 
 
 class HttpClient:
@@ -367,6 +368,31 @@ class ControlServer:
         await asyncio.gather(*(s.send(data) for s in targets))
         return len(targets)
 
+    def _build_info_about_agencies_blob(self) -> bytes:
+        payload = {
+            "type": "agencies",
+            "agencies": [ag.to_json() for ag in self.shared.agencies.values()],
+        }
+        return json.dumps(payload, separators=(",", ":")).encode("utf-8")
+
+    async def send_info_about_agencies_to_session(self, session):
+        if not session.alive:
+            return
+        blob = self._build_info_about_agencies_blob()
+        pkt = bytearray()
+        pkt += PacketType.INFO_ABOUT_AGENCIES.to_bytes(2, "little")  # 0x0007
+        pkt += struct.pack("<I", len(blob))                          # u32 length
+        pkt += blob
+        await session.send(pkt)
+
+    async def broadcast_info_about_agencies(self):
+        blob = self._build_info_about_agencies_blob()
+        pkt = bytearray()
+        pkt += PacketType.INFO_ABOUT_AGENCIES.to_bytes(2, "little")
+        pkt += struct.pack("<I", len(blob))
+        pkt += blob
+        await self.broadcast(pkt)
+
     async def handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         session = Session(reader, writer, self)
         self.sessions.add(session)
@@ -430,6 +456,7 @@ class ControlServer:
             player.session = session
 
         session.player = player
+        await self.send_info_about_agencies_to_session(session)
 
     def _build_chat_packet(self, msg_type: ChatMessage, sender_steam_id: int, text: str) -> bytes:
         pkt = bytearray()
