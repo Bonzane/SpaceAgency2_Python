@@ -468,8 +468,8 @@
             "cost" : 5,
             "mass" : 1,
             "attributes" : {
-                "forward-thrust" : 10000, 
-                "reverse-thrust" : 10000,
+                "forward-thrust" : 15000, 
+                "reverse-thrust" : 15000,
                 "forward-fuel-consumption" : 3, 
                 "reverse-fuel-consumption" : 3,
                 "forward-fire-output-point" : [0, 128], 

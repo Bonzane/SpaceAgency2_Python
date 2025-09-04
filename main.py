@@ -15,6 +15,7 @@ from textual.widgets import Header, Footer, Static
 from textual.containers import Horizontal
 import os
 from game import Game
+from secrets import achievement_key
 
 print("Server Starting")
 

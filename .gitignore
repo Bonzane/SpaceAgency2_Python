@@ -19,3 +19,6 @@ dist/
 
 # macOS system files
 .DS_Store
+
+# Secrets
+keys/

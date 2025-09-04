@@ -1,14 +1,18 @@
 import asyncio
 from dataclasses import dataclass, field
 import struct
-from typing import List, Dict, Tuple, Any, Union, Optional
-from physics import G, AU_KM
+from typing import List, Dict, Tuple, Any, Union, Optional, Set
+from physics import C_KM_S, G, AU_KM
 from gameobjects import PhysicsObject, GameObject, ObjectType
 from enum import Enum, IntEnum
 import math
 from packet_types import DataGramPacketType
 from vessel_components import Components
 from utils import ambient_temp_simple, shortest_delta_deg, wrap_deg, _coerce_int_keys, _notify_player_udp
+from payload_registry import make_payload_behavior
+from modifiers import Op, Modifier, apply_modifiers, UPGRADES_BY_PAYLOAD   # and your UPGRADES dict (see below)
+from upgrade_tree import UPGRADE_TREES_BY_PAYLOAD, UpgradeNode                # your UpgradeNode map
+
 
 class VesselControl(IntEnum):
     FORWARD_THRUST_ENGAGE = 0x00
@@ -119,10 +123,21 @@ class Vessel(PhysicsObject):
     #--- Electrical Systems ---
     systems: Dict[Systems, ElectricalSystem] = field(default_factory=dict, repr=False)
 
+    #Upgrades
+    unlocked_by_payload: Dict[int, Set[str]] = field(default_factory=dict)  # payload_id -> set[upgrade_id]
+    stats: Dict[str, Any] = field(default_factory=dict, repr=False)
+
 
 
 
     def __post_init__(self):
+        self.payload_behavior = make_payload_behavior(self)
+        # ensure an entry exists for the starting payload
+        if self.payload not in self.unlocked_by_payload:
+            self.unlocked_by_payload[self.payload] = set()
+        # if we start already at stage 0, let the behavior react and stats reflect stage gating
+        if self.stage == 0 and self.payload_behavior:
+            self.payload_behavior.on_attach()
         print("VESSEL SPAWNED")
 
 
@@ -151,6 +166,48 @@ class Vessel(PhysicsObject):
             self.telescope_targets = []
         if self.telescope_targets_in_sight is None:
             self.telescope_targets_in_sight = []
+
+    def _build_base_stats(self) -> Dict[str, Any]:
+        return {
+            "thrust":   {"forward": float(self.capable_forward_thrust),
+                         "reverse": float(self.capable_reverse_thrust)},
+            "power":    {"capacity": float(self._attached_power_capacity()),
+                         "solar": float(self.solar_power),
+                         "nuclear": float(self.nuclear_power),
+                         "draw_payload": 0.0},
+            "thermal":  {"resistance": float(self.thermal_resistance),
+                         "target_c": 20.0},
+            "telescope": {"range_km": float(self.telescope_range_km),
+                          "fov_deg": float(self.telescope_fov_deg),
+                          "max_rate_deg_s": 5.0},
+            "income":   {"base": 0.0},
+        }
+
+    def _collect_active_modifiers(self) -> list:
+        """Only modifiers for *this* payload and only when stage==0."""
+        if self.stage != 0:
+            return []
+
+        pid = int(self.payload)
+        unlocked = self.unlocked_by_payload.get(pid, set())
+        bundles_for_payload = UPGRADES_BY_PAYLOAD.get(pid, {})
+        mods = []
+        for up_id in unlocked:
+            mods.extend(bundles_for_payload.get(up_id, []))
+        return mods
+
+    def _apply_stats(self):
+        base = self._build_base_stats()
+        mods = self._collect_active_modifiers()
+        self.stats = apply_modifiers(base, mods, self)
+
+        # Mirror back to legacy fields used elsewhere:
+        self.capable_forward_thrust = float(self.stats["thrust"]["forward"])
+        self.capable_reverse_thrust = float(self.stats["thrust"]["reverse"])
+        self.power_capacity         = float(self.stats["power"]["capacity"])
+        self.telescope_fov_deg      = float(self.stats["telescope"]["fov_deg"])
+        self.telescope_range_km     = float(self.stats["telescope"]["range_km"])
+
 
 
     def calculate_vessel_stats(self):
@@ -265,6 +322,22 @@ class Vessel(PhysicsObject):
 
         self.power_capacity = self._attached_power_capacity()
         self.power = min(self._attached_power(), self.power_capacity)
+        self._apply_stats()
+
+    def can_unlock(self, upgrade_id: str) -> bool:
+        node = UPGRADE_GRAPH.get(upgrade_id)
+        if not node: return False
+        # All requires must be satisfied (either on vessel or agency)
+        agency = self.shared.agencies.get(self.agency_id)
+        have = set(self.unlocked_upgrades) | set(getattr(agency, "unlocked_upgrades", set()) or set())
+        return all(req in have for req in node.requires)
+
+    def unlock(self, upgrade_id: str) -> bool:
+        if not self.can_unlock(upgrade_id): 
+            return False
+        self.unlocked_upgrades.add(upgrade_id)
+        self._apply_stats()  # re-compute with new modifiers
+        return True
 
 
     def calculate_mass(self, component_data_lookup: Dict[int, Dict]) -> float:
@@ -465,6 +538,7 @@ class Vessel(PhysicsObject):
                 print("⚠️ No running event loop found to notify force_resolve.")
 
     def deploy_stage(self, force: bool = False):
+        prev = self.stage
         if self.stage <= 0:
             print("Can not deploy - already deployed!")
             return
@@ -492,6 +566,15 @@ class Vessel(PhysicsObject):
 
         self._notify_force_resolve()
 
+        if prev != self.stage and self.payload_behavior:
+            if self.stage == 0:
+                self.payload_behavior.on_attach()
+            elif prev == 0:
+                self.payload_behavior.on_detach()
+
+        # Upgrades only apply at stage 0, so recompute either way
+        self._apply_stats()
+
 
     def _auto_stage_if_empty(self):
         # Only stages that actually had tanks should auto-deploy
@@ -516,82 +599,9 @@ class Vessel(PhysicsObject):
 
 
     def do_payload_mechanics(self, dt: float):
-        _payload_data = self.shared.component_data.get(self.payload, {})
-        _payload_attributes = _payload_data.get("attributes", {})
-        _payload_income_per_second = _payload_attributes.get("payload_base_income", 0)
-        _agency = self.shared.agencies.get(self.agency_id)
-        _tickrate = self.shared.tickrate
-        # Make sure it's deployed
-        if not self.stage == 0:
+        if self.stage != 0 or not self.payload_behavior:
             return
-        
-        match self.payload:
-            case Components.COMMUNICATIONS_SATELLITE:
-                _payload_income_per_second += _agency.attributes.get("satellite_bonus_income", 0)
-            case Components.SPACE_TELESCOPE:
-                controlling_player_id = self.controlled_by
-                if controlling_player_id == 0:
-                    return
-                controlling_player = self.shared.players.get(controlling_player_id, None)
-                if not controlling_player:
-                    return
-                sess = getattr(controlling_player, "session", None)
-                if not sess or not sess.alive:
-                    return
-
-                self.telescope_targets_in_sight.clear()
-
-                # Scan all planets in this system
-                candidates = self._iter_planets_in_same_system()
-                if candidates:
-                    half_fov = max(0.0, float(self.telescope_fov_deg) * 0.5)
-                    rx, ry = self.position
-
-                    for obj in candidates:
-                        # Range gate
-                        dx = obj.position[0] - rx
-                        dy = obj.position[1] - ry
-                        dist_km = math.hypot(dx, dy)
-                        if dist_km > float(self.telescope_range_km):
-                            continue
-
-                        # FOV gate (keep your existing orientation convention)
-                        to_target_deg = math.degrees(math.atan2(dy, dx))
-                        delta = shortest_delta_deg(-self.rotation, to_target_deg)
-                        if abs(delta) <= half_fov:
-                            self.telescope_targets_in_sight.append(obj)
-
-                # Send what we see (object IDs only, packet format unchanged)
-                if sess and sess.alive and getattr(sess, "udp_port", None):
-                    addr = (sess.remote_ip, sess.udp_port)
-                    packet = self.shared.udp_server.build_telescope_sight_packet(self)
-                    self.shared.udp_server.transport.sendto(packet, addr)
-
-
-
-
-        if self.has_telescope_rcs:
-            # Rotate slowly toward target angle (shortest arc), no momentum/fuel use
-            # Use the same real-time scaling you use elsewhere:
-            scaled_dt = dt / getattr(self.shared, "gamespeed", 1.0)
-
-            max_rate = 5.0  # tweakable
-            max_step = max_rate * scaled_dt  # degrees we can turn this tick
-
-            delta = shortest_delta_deg(self.rotation, self.telescope_rcs_angle)
-
-            self.rotation_velocity = 0.0
-
-            if abs(delta) <= max_step:
-                # Snap when close enough
-                self.rotation = wrap_deg(self.rotation + delta)
-            else:
-                # Step toward target by max_step in the correct direction
-                self.rotation = wrap_deg(self.rotation + (max_step if delta > 0.0 else -max_step))
-
-
-        #Give income to the agency
-        _agency.distribute_money(_payload_income_per_second / _tickrate)
+        self.payload_behavior.on_tick(dt)
 
 
     def check_deployment_ready(self):
@@ -767,6 +777,42 @@ class Vessel(PhysicsObject):
         #    self.rotation = self.home_planet.rotation + self.launchpad_angle_offset
         #    self.velocity = (0.0, 0.0)
         #    self.rotation_velocity = 0.0
+
+    def current_payload_tree(self) -> Dict[str, UpgradeNode]:
+        return UPGRADE_TREES_BY_PAYLOAD.get(int(self.payload), {})
+
+    def current_payload_unlocked(self) -> Set[str]:
+        return self.unlocked_by_payload.setdefault(int(self.payload), set())
+
+    def can_unlock_current(self, upgrade_id: str) -> bool:
+        if self.stage != 0:
+            return False
+        tree = self.current_payload_tree()
+        node = tree.get(upgrade_id)
+        if not node:
+            return False
+        have = self.current_payload_unlocked()
+        return all(req in have for req in (node.requires or []))
+
+    def unlock_current(self, upgrade_id: str) -> bool:
+        """Call after checking/charging costs on the Agency."""
+        if not self.can_unlock_current(upgrade_id):
+            return False
+        self.current_payload_unlocked().add(upgrade_id)
+        self._apply_stats()
+        return True
+
+    def list_current_unlockables(self) -> Dict[str, bool]:
+        """For UI: upgrade_id -> can_unlock_now?"""
+        tree = self.current_payload_tree()
+        have = self.current_payload_unlocked()
+        out = {}
+        for up_id, node in tree.items():
+            if up_id in have:
+                continue
+            out[up_id] = all(req in have for req in (node.requires or [])) and (self.stage == 0)
+        return out
+
 
     def solar_efficiency_from_distance(self, pos=None, sun_pos=(0.0, 0.0), ref_dist_km=AU_KM):
         if pos is None:
@@ -1311,10 +1357,62 @@ class Vessel(PhysicsObject):
         dvx = (fx / self.mass) * scaled_dt
         dvy = (fy / self.mass) * scaled_dt
         vx, vy = self.velocity
-        self.velocity = (vx - dvy, vy - dvx)
+        self.velocity = (vx - dvy, vy - dvx)   
+
+        # --- Diminishing returns ---
+
+        V_MAX  = C_KM_S * 0.99999
+        V_90   = C_KM_S * 0.90
+        dvx_raw = dvx
+        dvy_raw = dvy
+
+        speed = math.hypot(vx, vy)
+        if speed > 0.0 and speed > V_90:
+            # unit vector along current velocity
+            ux, uy = vx / speed, vy / speed
+
+            # split raw Δv into parallel and perpendicular components
+            incr_par = dvx_raw * ux + dvy_raw * uy              # scalar Δspeed
+            dv_par_x = incr_par * ux
+            dv_par_y = incr_par * uy
+            dv_perp_x = dvx_raw - dv_par_x
+            dv_perp_y = dvy_raw - dv_par_y
+
+            if incr_par > 0.0:  # only limit pushes that increase speed
+                # 0 at 0.9c, 1 at V_MAX
+                frac = (speed - V_90) / (V_MAX - V_90)
+                if frac < 0.0: frac = 0.0
+                if frac > 1.0: frac = 1.0
+
+                # tunable steepness; crank this up if you want a harder wall
+                p = 3.0
+                damping = (1.0 - frac) ** p  # 1 at 0.9c → 0 at V_MAX
+
+                headroom = max(0.0, V_MAX - speed)  # how much speed we can add at all
+                allowed_incr = headroom * damping   # allowed Δspeed this tick
+
+                if incr_par > allowed_incr:
+                    # scale down only the parallel component to the allowed increment
+                    scale = 0.0 if incr_par == 0.0 else (allowed_incr / incr_par)
+                    dv_par_x *= scale
+                    dv_par_y *= scale
+
+                # recombine
+                dvx_raw = dv_par_x + dv_perp_x
+                dvy_raw = dv_par_y + dv_perp_y
+
+                # apply (unchanged orientation math)
+                self.velocity = (vx + dvx_raw, vy + dvy_raw)
+
+        # safety: never exceed V_MAX due to numerics
+        vx2, vy2 = self.velocity
+        s2 = math.hypot(vx2, vy2)
+        if s2 > V_MAX:
+            k = V_MAX / s2
+            self.velocity = (vx2 * k, vy2 * k)
 
 
-
+        # --- Torque ---
         local_dx = local_point[0] - self.center_of_mass[0]
         local_dy = local_point[1] - self.center_of_mass[1]
 
@@ -1332,6 +1430,7 @@ class Vessel(PhysicsObject):
             moment_of_inertia = self.mass * r_squared
             angular_acceleration = torque / moment_of_inertia
             self.rotation_velocity += math.degrees(angular_acceleration * scaled_dt)
+
 
 
     def apply_thrust(self, dt: float, thrust_kN: float, angle_offset: float = 0.0):
