@@ -99,8 +99,9 @@ class Vessel(PhysicsObject):
     region: int = 0  # Region ID for the vessel, used for proximity cues
     stage: int = 0
     num_stages: int = 0
-    payload: int = 0
     lifetime_revenue: int = 0
+    _lifetime_revenue_carry: float = 0.0   # holds fractional income
+    payload: int = 0
     maximum_operating_tempterature_c: float = 100.0
     current_temperature_c: float = 20.0
     thermal_resistance: float = 100
@@ -124,22 +125,45 @@ class Vessel(PhysicsObject):
     systems: Dict[Systems, ElectricalSystem] = field(default_factory=dict, repr=False)
 
     #Upgrades
-    unlocked_by_payload: Dict[int, Set[str]] = field(default_factory=dict)  # payload_id -> set[upgrade_id]
+    unlocked_by_payload: Dict[int, Set[int]] = field(default_factory=dict)  # payload_id -> set[upgrade_id]
     stats: Dict[str, Any] = field(default_factory=dict, repr=False)
-
+    upgrade_tree_push_accum: float = field(default=0.0, repr=False)
 
 
 
     def __post_init__(self):
-        self.payload_behavior = make_payload_behavior(self)
-        # ensure an entry exists for the starting payload
+        # Defer: payload/shared/stage aren’t known yet
+        self.payload_behavior = None
         if self.payload not in self.unlocked_by_payload:
             self.unlocked_by_payload[self.payload] = set()
-        # if we start already at stage 0, let the behavior react and stats reflect stage gating
-        if self.stage == 0 and self.payload_behavior:
-            self.payload_behavior.on_attach()
         print("VESSEL SPAWNED")
 
+    def _payload_attr(self, key: str, default=0.0) -> float:
+        try:
+            cd = (self.shared.component_data.get(int(self.payload), {}) or {})
+            attrs = (cd.get("attributes", {}) or {})
+            return float(attrs.get(key, default))
+        except Exception:
+            return float(default)
+
+    def _ensure_payload_behavior(self):
+        # Rebuild if missing or for the wrong payload id
+        if (self.payload_behavior is None or
+            getattr(self.payload_behavior, "payload_id", None) != int(self.payload)):
+            self.payload_behavior = make_payload_behavior(self)
+
+    def credit_income(self, amount: float) -> int:
+        """Accumulate income; store whole units in lifetime_revenue, keep the rest in a carry bucket."""
+        amt = float(amount)
+        if amt <= 0.0:
+            return self.lifetime_revenue
+        self._lifetime_revenue_carry += amt
+
+        whole = int(self._lifetime_revenue_carry)   # truncate toward 0
+        if whole > 0:
+            self.lifetime_revenue += whole
+            self._lifetime_revenue_carry -= whole
+        return self.lifetime_revenue
 
 
     def __getstate__(self):
@@ -157,6 +181,13 @@ class Vessel(PhysicsObject):
 
         return state
 
+    def _payload_base_income(self) -> float:
+        try:
+            cd = (self.shared.component_data.get(int(self.payload), {}) or {})
+            return float((cd.get("attributes", {}) or {}).get("payload_base_income", 0.0))
+        except Exception:
+            return 0.0
+
     def __setstate__(self, state):
         self.__dict__.update(state)
         # re-init runtime fields to safe defaults; Chunk will reattach them after load
@@ -170,18 +201,19 @@ class Vessel(PhysicsObject):
     def _build_base_stats(self) -> Dict[str, Any]:
         return {
             "thrust":   {"forward": float(self.capable_forward_thrust),
-                         "reverse": float(self.capable_reverse_thrust)},
+                        "reverse": float(self.capable_reverse_thrust)},
             "power":    {"capacity": float(self._attached_power_capacity()),
-                         "solar": float(self.solar_power),
-                         "nuclear": float(self.nuclear_power),
-                         "draw_payload": 0.0},
+                        "solar": float(self.solar_power),
+                        "nuclear": float(self.nuclear_power),
+                        "draw_payload": 0.0},
             "thermal":  {"resistance": float(self.thermal_resistance),
-                         "target_c": 20.0},
+                        "target_c": 20.0},
             "telescope": {"range_km": float(self.telescope_range_km),
-                          "fov_deg": float(self.telescope_fov_deg),
-                          "max_rate_deg_s": 5.0},
-            "income":   {"base": 0.0},
+                        "fov_deg": float(self.telescope_fov_deg),
+                        "max_rate_deg_s": 5.0},
+            "income":   {"base": self._payload_base_income()},   # <<— was 0.0
         }
+
 
     def _collect_active_modifiers(self) -> list:
         """Only modifiers for *this* payload and only when stage==0."""
@@ -207,6 +239,82 @@ class Vessel(PhysicsObject):
         self.power_capacity         = float(self.stats["power"]["capacity"])
         self.telescope_fov_deg      = float(self.stats["telescope"]["fov_deg"])
         self.telescope_range_km     = float(self.stats["telescope"]["range_km"])
+
+
+    def _build_upgrades_dgram(self) -> bytes:
+        # 1) already-unlocked (as ints)
+        unlocked = sorted(int(u) for u in self.current_payload_unlocked())
+
+        # 2) which ones are purchasable right now (tier + prereqs + stage==0)
+        unlockables = self.list_current_unlockables()
+
+        # 3) attach prices for the ones that are True
+        tree = self.current_payload_tree()
+        purch = []
+        for up_id, can in unlockables.items():
+            if can and up_id in tree:
+                cost = int(getattr(tree[up_id], "cost_money", 0))
+                purch.append((int(up_id), cost))
+        purch.sort(key=lambda t: t[0])
+
+        # --- pack
+        buf = bytearray()
+        buf.append(int(DataGramPacketType.VESSEL_UPGRADE_TREE))  # define this enum value
+
+        buf += struct.pack('<Q', int(self.object_id))
+        buf += struct.pack('<H', len(unlocked))
+        for up_id in unlocked:
+            buf += struct.pack('<H', int(up_id))
+
+        buf += struct.pack('<H', len(purch))
+        for up_id, cost in purch:
+            buf += struct.pack('<HQ', int(up_id), int(cost))
+
+        return bytes(buf)
+
+    def _broadcast_upgrade_tree_to_agency(self):
+        pkt = self._build_upgrades_dgram()
+        udp = getattr(self.shared, "udp_server", None)
+        if udp and getattr(udp, "transport", None):
+            udp.send_udp_to_agency(int(self.agency_id), pkt)
+
+
+    # --- helpers ---
+    def _send_upgrade_tree_to_player(self, player_id: int) -> int:
+        """Send the current upgrade tree UDP packet to a single player (by id)."""
+        if not player_id:
+            return 0
+        shared = getattr(self, "shared", None)
+        if not shared:
+            return 0
+        udp = getattr(shared, "udp_server", None)
+        if not (udp and getattr(udp, "transport", None)):
+            return 0
+        p = shared.players.get(int(player_id))
+        if not p:
+            return 0
+        s = getattr(p, "session", None)
+        if not (s and s.alive and getattr(s, "udp_port", None)):
+            return 0
+
+        pkt = self._build_upgrades_dgram()
+        addr = (s.remote_ip, s.udp_port)
+        udp.transport.sendto(pkt, addr)
+        return 1
+
+    def _tick_upgrade_tree_push(self, real_dt: float):
+        """
+        While controlled, push the upgrades packet to the controller every ~1s (real time).
+        real_dt must be wall/real seconds (dt / gamespeed).
+        """
+        if not int(getattr(self, "controlled_by", 0)):
+            self.upgrade_tree_push_accum = 0.0
+            return
+
+        self.upgrade_tree_push_accum += max(0.0, float(real_dt))
+        if self.upgrade_tree_push_accum >= 1.0:
+            self._send_upgrade_tree_to_player(int(self.controlled_by))
+            self.upgrade_tree_push_accum = 0.0
 
 
 
@@ -565,15 +673,19 @@ class Vessel(PhysicsObject):
         print(f"✅ Vessel {self.object_id} staged: {prev_stage} → {self.stage} (components={len(self.components)})")
 
         self._notify_force_resolve()
-
-        if prev != self.stage and self.payload_behavior:
-            if self.stage == 0:
+        if prev != self.stage:
+            self._ensure_payload_behavior()
+            if self.stage == 0 and self.payload_behavior:
                 self.payload_behavior.on_attach()
-            elif prev == 0:
+            elif prev == 0 and self.payload_behavior:
                 self.payload_behavior.on_detach()
 
-        # Upgrades only apply at stage 0, so recompute either way
+        # Recompute (applies tier gates etc.)
         self._apply_stats()
+
+        # Now send the tree once we’re fully settled at stage 0
+        if self.stage == 0:
+            self._broadcast_upgrade_tree_to_agency()
 
 
     def _auto_stage_if_empty(self):
@@ -599,9 +711,28 @@ class Vessel(PhysicsObject):
 
 
     def do_payload_mechanics(self, dt: float):
-        if self.stage != 0 or not self.payload_behavior:
+        if self.stage != 0:
             return
-        self.payload_behavior.on_tick(dt)
+        self._ensure_payload_behavior()
+        print(f"[Vessel] mech tick oid={self.object_id} stage={self.stage} "
+            f"payload={self.payload} behavior={type(self.payload_behavior).__name__}")
+        if self.payload_behavior:
+            try:
+                self.payload_behavior.on_tick(dt)
+            except Exception as e:
+                print(f"[Vessel] payload on_tick error: {e}")
+
+    def _max_tier_for_current_payload(self) -> int:
+        """Gate by agency attributes; only comm-sat uses satellite_max_upgrade_tier."""
+        agency = self.shared.agencies.get(self.agency_id)
+        if not agency:
+            return 0
+        # Communications satellite gate
+        from vessel_components import Components
+        if int(self.payload) == int(Components.COMMUNICATIONS_SATELLITE):
+            return int(agency.attributes.get("satellite_max_upgrade_tier", 1))
+        # Other payload types can have their own attrs later
+        return 999
 
 
     def check_deployment_ready(self):
@@ -706,6 +837,8 @@ class Vessel(PhysicsObject):
         self.check_destroyed()
         
         scaled_dt = dt / max(1e-9, float(self.shared.gamespeed))
+        self._tick_upgrade_tree_push(scaled_dt)
+
         #4 - Charge Power
         if self.solar_power > 0.0:
             eff = self.solar_efficiency_from_distance(self.position)
@@ -726,6 +859,8 @@ class Vessel(PhysicsObject):
         chunkpacket = bytearray()
         chunkpacket.append(DataGramPacketType.VESSEL_STREAM)
         chunkpacket += struct.pack('<Q', self.object_id)
+        chunkpacket += struct.pack('<Q', self.agency_id)
+        chunkpacket += struct.pack('<Q', int(self.lifetime_revenue))
         chunkpacket += struct.pack('<B', int(self.control_state[VesselState.FORWARD_THRUSTER_ON]))
         chunkpacket += struct.pack('<B', int(self.control_state[VesselState.REVERSE_THRUSTER_ON]))
         chunkpacket += struct.pack('<B', int(self.control_state[VesselState.CCW_THRUST_ON]))
@@ -749,6 +884,7 @@ class Vessel(PhysicsObject):
         chunkpacket += struct.pack('<f', self.ambient_temp_K)
         chunkpacket += struct.pack('<H', self.stage)
         chunkpacket += struct.pack('<B', self.deployment_ready)
+        chunkpacket += struct.pack('<f', self.planet_income_multiplier() )
         chunkpacket += struct.pack('<H', len(self.systems))
         for sys_type, sys in self.systems.items():
             chunkpacket += struct.pack('<H', int(sys_type))        # system type
@@ -778,13 +914,43 @@ class Vessel(PhysicsObject):
         #    self.velocity = (0.0, 0.0)
         #    self.rotation_velocity = 0.0
 
-    def current_payload_tree(self) -> Dict[str, UpgradeNode]:
+    def current_payload_tree(self) -> Dict[int, UpgradeNode]:
         return UPGRADE_TREES_BY_PAYLOAD.get(int(self.payload), {})
 
-    def current_payload_unlocked(self) -> Set[str]:
+    def current_payload_unlocked(self) -> Set[int]:
         return self.unlocked_by_payload.setdefault(int(self.payload), set())
 
-    def can_unlock_current(self, upgrade_id: str) -> bool:
+    def planet_income_multiplier(self) -> float:
+        """
+        Return the per-planet cash multiplier for this vessel’s location.
+        Uses the strongest gravity source if it's a planet; otherwise falls
+        back to home_planet. If no base multiplier is set, returns 1.0.
+        """
+        try:
+            from gameobjects import Planet
+        except Exception:
+            Planet = None
+
+        # Pick the planet to look up
+        src = getattr(self, "strongest_gravity_source", None)
+        if Planet is None or not isinstance(src, Planet):
+            return 1.0
+        pid = int(getattr(src, "object_id", 0) or 0)
+        if pid <= 0:
+            return 1.0
+
+        # Look up the agency-scoped multiplier
+        agency = getattr(self.shared, "agencies", {}).get(int(self.agency_id))
+        if not agency:
+            return 1.0
+
+        m = float(getattr(agency, "base_multipliers", {}).get(pid, 1.0))
+        # sanity + NaN/inf guard
+        if not (m > 0.0) or math.isinf(m) or math.isnan(m):
+            return 1.0
+        return m
+
+    def can_unlock_current(self, upgrade_id: int) -> bool:
         if self.stage != 0:
             return False
         tree = self.current_payload_tree()
@@ -794,7 +960,7 @@ class Vessel(PhysicsObject):
         have = self.current_payload_unlocked()
         return all(req in have for req in (node.requires or []))
 
-    def unlock_current(self, upgrade_id: str) -> bool:
+    def unlock_current(self, upgrade_id: int) -> bool:
         """Call after checking/charging costs on the Agency."""
         if not self.can_unlock_current(upgrade_id):
             return False
@@ -802,17 +968,21 @@ class Vessel(PhysicsObject):
         self._apply_stats()
         return True
 
-    def list_current_unlockables(self) -> Dict[str, bool]:
-        """For UI: upgrade_id -> can_unlock_now?"""
+    def list_current_unlockables(self) -> Dict[int, bool]:
+        """For UI: upgrade_id -> can_unlock_now?  (prereqs + stage + tier gate)"""
         tree = self.current_payload_tree()
         have = self.current_payload_unlocked()
-        out = {}
+        max_tier = self._max_tier_for_current_payload()
+
+        out: Dict[int, bool] = {}
         for up_id, node in tree.items():
             if up_id in have:
                 continue
-            out[up_id] = all(req in have for req in (node.requires or [])) and (self.stage == 0)
+            can = (self.stage == 0
+                and all(req in have for req in (getattr(node, "requires", []) or []))
+                and int(getattr(node, "tier", 1)) <= int(max_tier))
+            out[int(up_id)] = bool(can)
         return out
-
 
     def solar_efficiency_from_distance(self, pos=None, sun_pos=(0.0, 0.0), ref_dist_km=AU_KM):
         if pos is None:
@@ -1785,6 +1955,8 @@ def construct_vessel_from_request(shared, player, vessel_request_data) -> Vessel
         vessel.launchpad_planet_id = planet_id
         vessel.stage, vessel.num_stages = max(stages), max(stages) + 1
         vessel.payload = components[payload_idx].id
+        vessel.calculate_vessel_stats()
+        vessel._ensure_payload_behavior()
 
         # Add vessel to its agency
         agency = shared.agencies.get(player.agency_id)

@@ -1,27 +1,28 @@
 # upgrade_tree.py
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, List
-from vessel_components import Components  # your enum
+from vessel_components import Components 
+from enum import IntEnum
+
+class T_UP(IntEnum):
+    PING1        = 0x0000
+    PING2        = 0x0001
+    NETWORKING1  = 0x0002
+    NETWORKING2  = 0x0003
 
 @dataclass(frozen=True)
 class UpgradeNode:
-    id: str
-    requires: List[str] = None
+    id: int
+    tier: int
+    requires: List[int] = field(default_factory=list)  # ← avoid None
     cost_money: int = 0
-    cost_items: Dict[int, int] = None
 
-# Trees are keyed by payload component id; values are {upgrade_id -> node}
-UPGRADE_TREES_BY_PAYLOAD: Dict[int, Dict[str, UpgradeNode]] = {
+# Key the inner dict by int (not str), since you’re using IntEnum keys
+UPGRADE_TREES_BY_PAYLOAD: Dict[int, Dict[int, UpgradeNode]] = {
     int(Components.COMMUNICATIONS_SATELLITE): {
-        "high_gain":    UpgradeNode("high_gain",    requires=[],                cost_money=2000),
-        "xband_amp":    UpgradeNode("xband_amp",    requires=["high_gain"],     cost_money=3500),
-        "ka_array":     UpgradeNode("ka_array",     requires=["xband_amp"],     cost_money=5000),
-    },
-    int(Components.SPACE_TELESCOPE): {
-        "fine_rcs":     UpgradeNode("fine_rcs",     requires=[],                cost_money=3000),
-        "wide_fov":     UpgradeNode("wide_fov",     requires=[],                cost_money=2500),
-        "deep_cooler":  UpgradeNode("deep_cooler",  requires=["fine_rcs"],      cost_money=6000),
-    },
-    # int(Components.MOON_LANDER): {...}
-    # int(Components.PROBE): {...}
+        T_UP.PING1:        UpgradeNode(T_UP.PING1,        1, [],                       5000),
+        T_UP.NETWORKING1:  UpgradeNode(T_UP.NETWORKING1,  1, [],                      15000),
+        T_UP.PING2:        UpgradeNode(T_UP.PING2,        2, [T_UP.PING1],            20000),
+        T_UP.NETWORKING2:  UpgradeNode(T_UP.NETWORKING2,  2, [T_UP.NETWORKING1],      45000),
+    }
 }

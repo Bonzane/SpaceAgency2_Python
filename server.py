@@ -764,6 +764,85 @@ class StreamingServer:
             # even though it's a response to a UDP packet. 
             asyncio.create_task(session.send(self.build_resolve_vessel_packet(vessel)))
 
+        elif data[0] == DataGramPacketType.REQUEST_VESSEL_TREE_UPGRADE:
+            # need 1(opcode)+8(vessel id)+2(upgrade id)
+            if len(data) < 11:
+                print("⚠️ REQUEST_VESSEL_TREE_UPGRADE: packet too short")
+                return
+
+            vessel_id  = int.from_bytes(data[1:9], 'little')
+            upgrade_id = int.from_bytes(data[9:11], 'little')
+
+            key = (ip, port)
+            session = self.shared.udp_endpoint_to_session.get(key)
+            if not session or not session.alive:
+                print(f"❌ Unknown or dead session for {key}")
+                return
+            player = getattr(session, "player", None)
+            if not player:
+                print(f"❌ No player bound to session {getattr(session, 'temp_id', 0)}")
+                return
+
+            # find vessel in the player's current chunk
+            chunk_key = (player.galaxy, player.system)
+            chunk = self.shared.chunk_manager.loaded_chunks.get(chunk_key)
+            if not chunk:
+                print(f"❌ Couldn't find chunk {chunk_key}")
+                return
+            vessel = chunk.get_object_by_id(vessel_id)
+            if not vessel:
+                self._udp_send_to_session(session, self.build_notification_packet(1, "Upgrade failed: vessel not found"))
+                return
+
+            # basic ownership/authority checks (tighten if you want stricter rules)
+            if getattr(vessel, "agency_id", None) != getattr(player, "agency_id", None):
+                self._udp_send_to_session(session, self.build_notification_packet(1, "Upgrade failed: not your agency's vessel"))
+                return
+            # Require controller to spend; alternatively allow anyone in agency:
+            if getattr(vessel, "controlled_by", 0) not in (getattr(player, "steamID", 0), getattr(player, "steam_id", 0)):
+                self._udp_send_to_session(session, self.build_notification_packet(1, "Upgrade failed: you must be controlling this vessel"))
+                return
+
+            # Verify the upgrade exists & is currently unlockable (tier, prereqs, stage==0)
+            tree = vessel.current_payload_tree()
+            node = tree.get(int(upgrade_id))
+            if not node:
+                self._udp_send_to_session(session, self.build_notification_packet(1, "Upgrade failed: invalid upgrade id"))
+                return
+
+            if not vessel.can_unlock_current(int(upgrade_id)):
+                # can be prereqs/tier/stage gate
+                self._udp_send_to_session(session, self.build_notification_packet(1, "Upgrade failed: requirements not met"))
+                return
+
+            # Cost check – charge the player (swap to agency if desired)
+            cost = int(getattr(node, "cost_money", 0))
+            if getattr(player, "money", 0) < cost:
+                self._udp_send_to_session(session, self.build_notification_packet(1, "Upgrade failed: insufficient funds"))
+                return
+
+            # Deduct → attempt unlock → refund on failure (paranoia)
+            player.money -= cost
+            if not vessel.unlock_current(int(upgrade_id)):
+                player.money += cost
+                self._udp_send_to_session(session, self.build_notification_packet(1, "Upgrade failed: could not unlock"))
+                return
+
+            # Success: notify, push updated tree to the requester, and refresh money HUD
+            self._udp_send_to_session(session, self.build_notification_packet(2, f"Upgrade purchased (#{upgrade_id}) for {cost}"))
+            try:
+                pkt = vessel._build_upgrades_dgram()
+                self._udp_send_to_session(session, pkt)
+            except Exception as e:
+                print(f"⚠️ Failed to send updated upgrade tree: {e}")
+
+            # (Optional) immediate money refresh; otherwise your 60Hz loop will cover it quickly.
+            try:
+                self.send_player_details()
+            except Exception:
+                pass
+
+
 
 
     def error_received(self, exc):
@@ -811,6 +890,23 @@ class StreamingServer:
         for oid in ids:
             pkt += struct.pack('<Q', oid)
         return pkt
+
+
+    # StreamingServer
+    def send_udp_to_agency(self, agency_id: int, packet: bytes) -> int:
+        """
+        Send a raw UDP packet to all online players in the given agency.
+        Returns the number of packets successfully sent.
+        """
+        sent = 0
+        for s in self.control.sessions:
+            if not s.alive:
+                continue
+            p = getattr(s, "player", None)
+            if not p or getattr(p, "agency_id", None) != agency_id:
+                continue
+            sent += 1 if self._udp_send_to_session(s, packet) else 0
+        return sent
 
 
 

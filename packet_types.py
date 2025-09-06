@@ -40,6 +40,8 @@ class DataGramPacketType(IntEnum):
     TELESCOPE_SIGHT = 0x08
     NOTIFICATION = 0x09
     NOTIFY_VESSEL_DESTROYED = 0x0A
+    VESSEL_UPGRADE_TREE = 0x0B
+    REQUEST_VESSEL_TREE_UPGRADE = 0x0C
 
 
 class ChatMessage(IntEnum):

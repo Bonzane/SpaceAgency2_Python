@@ -3,6 +3,8 @@ import math
 from typing import Dict, List, Any
 import json
 import struct
+from upgrade_tree import T_UP
+from vessel_components import Components
 from packet_types import PacketType
 from buildings import Building, BuildingType
 import copy
@@ -25,10 +27,12 @@ class Agency:
     income_per_second: int = 0
     base_inventories: Dict[int, Dict[int, int]] = field(default_factory=dict)
     base_inventory_capacities: Dict[int, int] = field(default_factory=dict)
+    base_multipliers: Dict[int, float] = field(default_factory=dict)
 
     def __post_init__(self):
         default_building = Building(BuildingType.EARTH_HQ, self.shared, 7, 2, self)
         self.bases_to_buildings[2] = [default_building]
+        self.bases_to_buildings[1] = []
         self.attributes = copy.deepcopy(self.shared.agency_default_attributes)
 
 
@@ -144,6 +148,59 @@ class Agency:
         self.vessels = [v for v in self.vessels if getattr(v, "object_id", None) != vid]
     
     # === Attributes ===
+
+    def recompute_networking_multipliers(self) -> None:
+        """Rebuild per-planet multipliers from deployed comm sats with NETWORKING."""
+        self.base_multipliers.clear()
+
+        for sat in list(self.vessels):
+            try:
+                if int(getattr(sat, "payload", 0)) != int(Components.COMMUNICATIONS_SATELLITE):
+                    continue
+                if int(getattr(sat, "stage", 1)) != 0:
+                    continue  # not deployed
+
+                unlocked = sat.current_payload_unlocked()
+                if int(T_UP.NETWORKING2) in unlocked:
+                    pct = 0.02
+                elif int(T_UP.NETWORKING1) in unlocked:
+                    pct = 0.01
+                else:
+                    continue
+
+                planets = list(sat._iter_planets_in_same_system())
+                if not planets:
+                    continue
+
+                sx, sy = sat.position
+                nearest = min(
+                    planets,
+                    key=lambda p: math.hypot(p.position[0]-sx, p.position[1]-sy)
+                )
+
+                r = float(getattr(nearest, "radius_km", 0.0))
+                if r <= 0.0:
+                    continue
+                dist = math.hypot(nearest.position[0]-sx, nearest.position[1]-sy)
+                if dist > r * 4.0:  # within 2x diameter
+                    continue
+
+                pid = int(getattr(nearest, "object_id", 0))
+                if pid == 0:
+                    continue
+
+                # additive stacking: 1.0 base + 0.01/0.02 per qualifying sat
+                self.base_multipliers[pid] = self.base_multipliers.get(pid, 1.0) + pct
+
+                # Optional safety cap to avoid runaway stacking:
+                # self.base_multipliers[pid] = min(self.base_multipliers[pid], 2.0)
+
+            except Exception:
+                continue
+
+    def planet_multiplier_for(self, planet_id: int) -> float:
+        return float(self.base_multipliers.get(int(planet_id or 0), 1.0))
+    
     def update_attributes(self) -> None:
         # 1) start from defaults
         attrs = dict(self.shared.agency_default_attributes)
@@ -190,6 +247,9 @@ class Agency:
 
         # 3) commit
         self.attributes = attrs
+
+        #4) Also do the planet networking multiplier
+        self.recompute_networking_multipliers()
 
 
 
@@ -374,6 +434,13 @@ class Agency:
             base_id: [building.to_json() for building in buildings]
             for base_id, buildings in self.bases_to_buildings.items()
         }
+
+        base_mults_diff = {
+            int(pid): round(float(mult), 4)
+            for pid, mult in self.base_multipliers.items()
+            if abs(float(mult) - 1.0) > 1e-9
+        }
+
         data = {
             "id": self.id64,
             "mbrs": self.members,
@@ -385,6 +452,7 @@ class Agency:
             "vsls": [v.get_id() for v in self.get_all_vessels()],
             "base_capacities": self.base_inventory_capacities,
             "base_inventories": self.base_inventories,
+            "base_multipliers": base_mults_diff
         }
 
         payload = json.dumps(data, separators=(',', ':')).encode('utf-8')

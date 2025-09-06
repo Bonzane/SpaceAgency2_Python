@@ -9,7 +9,7 @@
 🚀  Game - Which game does the server launch?
 🚀 -----------------------------------------
 
-game.path ./gameData/devGame3/
+game.path ./gameData/devGame/
 🚀 Relative path reccomended
 
 
@@ -44,7 +44,7 @@ game_defaults.componentcostmultiplier 1.0
 game_defaults.buildingcostmultiplier 1.0
 game_defaults.upgradecostmultiplier 1.0
 game_defaults.baseincomemultiplier 1.0
-game_defaults.playerstartcash 20000000
+game_defaults.playerstartcash 200000
 game_defaults.basecashpersecond 100
 game_defaults.gamespeedmultiplier 0.5
 
