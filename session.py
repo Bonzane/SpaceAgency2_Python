@@ -427,8 +427,8 @@ class Session:
                 if control_key == int(VesselControl.SET_TELESCOPE_TARGET_ANGLE):
                     raw = await self.reader.readexactly(4)
                     angle_value = struct.unpack('<f', raw)[0]
-                    vessel.telescope_rcs_angle = angle_value
-                    print(f"🔭 Set telescope RCS angle to {angle_value}")
+                    vessel.telescope_rcs_angle = -angle_value
+                    print(f"🔭 Set telescope RCS angle to {-angle_value}")
 
                 elif control_key == int(VesselControl.SET_SYSTEM_STATE):
                     raw = await self.reader.readexactly(3)  # u16 + u8

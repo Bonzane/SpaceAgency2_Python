@@ -351,9 +351,9 @@
             "category" : "hull",
             "name" : "Standard Hull", 
             "cost" : 30000,
-            "mass" : 700,
+            "mass" : 650,
             "attributes" : {
-                "liquid-fuel" : 1250
+                "liquid-fuel" : 1050
             }, 
             "snap_points" : [
                 {
@@ -442,9 +442,9 @@
             "category" : "engine",
             "name" : "Standard Thruster", 
             "cost" : 20000,
-            "mass" : 200,
+            "mass" : 150,
             "attributes" : {
-                "forward-thrust" : 39, 
+                "forward-thrust" : 70, 
                 "forward-fuel-consumption" : 15, 
                 "forward-fire-output-point" : [0, 118], 
                 "forward-ignition-sound" : 1, 
@@ -497,9 +497,9 @@
             "category" : "engine",
             "name" : "Eco Thruster", 
             "cost" : 25000,
-            "mass" : 215,
+            "mass" : 160,
             "attributes" : {
-                "forward-thrust" : 30,
+                "forward-thrust" : 60,
                 "forward-fuel-consumption" : 10,
                 "forward-fire-output-point" : [0, 128], 
                 "forward-ignition-sound" : 2, 
@@ -520,16 +520,16 @@
             "id" : 7,
             "category" : "engine",
             "name" : "Flash Booster", 
-            "cost" : 30000,
-            "mass" : 192,
+            "cost" : 32000,
+            "mass" : 145,
             "attributes" : {
-                "forward-thrust" : 58,
-                "forward-fuel-consumption" : 27,
+                "forward-thrust" : 85,
+                "forward-fuel-consumption" : 28,
                 "forward-fire-output-point" : [0, 128], 
                 "forward-ignition-sound" : 3, 
                 "forward-thrust-sound" : 1,
                 "forward-fire-appearance" : 1,
-                "forward-fire-heat" : 1.4
+                "forward-fire-heat" : 1.7
             },
             "snap_points" : [
                 {
@@ -597,9 +597,9 @@
             "category" : "engine",
             "name" : "Reversible Thruster", 
             "cost" : 40000,
-            "mass" : 240,
+            "mass" : 155,
             "attributes" : {
-                "forward-thrust" : 43,
+                "forward-thrust" : 70,
                 "forward-fuel-consumption" : 15,
                 "forward-fire-output-point" : [0, 128], 
                 "forward-ignition-sound" : 1, 
@@ -731,7 +731,7 @@
             "mass" : 300,
             "attributes" : {
                 "is-payload" : 1,
-                "payload_base_income" : 450,
+                "payload_base_income" : 320,
                 "telescope-rcs" : 1
             }, 
             "snap_points" : [
@@ -751,7 +751,7 @@
             "cost" : 20000,
             "mass" : 440,
             "attributes" : {
-                "liquid-fuel" : 950
+                "liquid-fuel" : 850
             }, 
             "snap_points" : [
                 {
@@ -780,9 +780,9 @@
             "category" : "hull",
             "name" : "Heavy Hull", 
             "cost" : 40000,
-            "mass" : 960,
+            "mass" : 900,
             "attributes" : {
-                "liquid-fuel" : 2200,
+                "liquid-fuel" : 1560,
                 "armor" : 20
             }, 
             "snap_points" : [
@@ -836,7 +836,7 @@
             "category" : "hull",
             "name" : "Vertical Stage Seperator", 
             "cost" : 10000,
-            "mass" : 50,
+            "mass" : 30,
             "attributes" : {
                 "stage-add" : 1
             }, 
@@ -909,7 +909,7 @@
                 "5" : 5,
                 "7" : 50
             },
-            "mass" : 60,
+            "mass" : 50,
             "attributes" : {
                 "thermal-resistance" : 5,
                 "thermal-regulation" : 5,
@@ -951,7 +951,7 @@
             "category" : "attachment",
             "name" : "Aerodynamic Nose Cone", 
             "cost" : 20000,
-            "mass" : 40,
+            "mass" : 30,
             "attributes" : {
             },
             "snap_points" : [

@@ -109,12 +109,10 @@ class Vessel(PhysicsObject):
     unland_grace_time_s: float = 0.0
 
     #---Telescopes---
-    has_telescope_rcs: bool = False
     telescope_rcs_angle: float = 0.0
-    telescope_targets: List[GameObject] = field(default_factory=list, repr=False)
     telescope_targets_in_sight: List[GameObject] = field(default_factory=list, repr=False)
     telescope_range_km: float = AU_KM
-    telescope_fov_deg: float = 60.0
+    telescope_fov_deg: float = 40.0
 
     fuel_by_stage: Dict[int, float] = field(default_factory=dict, repr=False)
     capacity_by_stage: Dict[int, float] = field(default_factory=dict, repr=False)
@@ -175,7 +173,6 @@ class Vessel(PhysicsObject):
         state['home_chunk'] = None
 
         # ephemeral / recomputable
-        state['telescope_targets'] = []
         state['telescope_targets_in_sight'] = []
         state['strongest_gravity_source'] = None  # will be recomputed by Chunk
 
@@ -193,8 +190,6 @@ class Vessel(PhysicsObject):
         # re-init runtime fields to safe defaults; Chunk will reattach them after load
         self.shared = None
         self.home_chunk = None
-        if self.telescope_targets is None:
-            self.telescope_targets = []
         if self.telescope_targets_in_sight is None:
             self.telescope_targets_in_sight = []
 
@@ -378,8 +373,6 @@ class Vessel(PhysicsObject):
             weighted_x += comp.x * mass
             weighted_y += comp.y * mass
 
-            if(attrs.get("telescope-rcs", False)):
-                self.has_telescope_rcs = True
 
 
             #FOR EVERY ATTACHED COMPONENT:
@@ -714,8 +707,8 @@ class Vessel(PhysicsObject):
         if self.stage != 0:
             return
         self._ensure_payload_behavior()
-        print(f"[Vessel] mech tick oid={self.object_id} stage={self.stage} "
-            f"payload={self.payload} behavior={type(self.payload_behavior).__name__}")
+        #print(f"[Vessel] mech tick oid={self.object_id} stage={self.stage} "
+        #    f"payload={self.payload} behavior={type(self.payload_behavior).__name__}")
         if self.payload_behavior:
             try:
                 self.payload_behavior.on_tick(dt)
