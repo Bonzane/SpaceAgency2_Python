@@ -7,6 +7,10 @@ from utils import shortest_delta_deg
 from vessels import *
 from packet_types import DataGramPacketType
 import struct
+from gameobjects import Planet
+
+
+
 
 class PayloadBehavior(ABC):
     """One instance per vessel (holds per-vessel state)."""
@@ -229,3 +233,231 @@ class SpaceTelescope(PayloadBehavior):
             # reset so first control push sends immediately
             self._last_ids = None
             self._sight_push_accum = 0.0
+
+
+
+class Probe(PayloadBehavior):
+    """
+    Base income * (# unique non-moon planets visited).
+    Visit = within N× radius of strongest gravity source (N=4, Flyby1->6, Flyby2->10).
+    Perijove: ×2 income while within 4×R of a gas giant.
+    AACS:     ×2 income if pointing within 5° of home planet.
+    """
+
+    def _visit_threshold_multiplier(self) -> float:
+        """4× by default; 6× with FLYBY1; 10× with FLYBY2 (takes precedence)."""
+        v = self.vessel
+        unlocked = v.current_payload_unlocked()
+        if int(T_UP.FLYBY2) in unlocked:
+            return 10.0
+        if int(T_UP.FLYBY1) in unlocked:
+            return 6.0
+        return 4.0
+
+    def _maybe_mark_visit(self):
+        v = self.vessel
+        src = getattr(v, "strongest_gravity_source", None)
+        if not isinstance(src, Planet):
+            return
+
+        # Do not count moons as 'planets' for probes.
+        if bool(getattr(src, "is_moon", False)):
+            return
+
+        # distance to current strongest gravity source
+        dx = float(v.position[0]) - float(src.position[0])
+        dy = float(v.position[1]) - float(src.position[1])
+        dist_km = math.hypot(dx, dy)
+
+        R = float(getattr(src, "radius_km", 0.0))
+        if R <= 0.0:
+            return
+
+        thresh = self._visit_threshold_multiplier() * R
+        if dist_km > thresh:
+            return
+
+        pid = int(getattr(src, "object_id", 0))
+        if pid <= 0:
+            return
+
+        # first time close enough: record + notify
+        if pid not in v.planets_visited:
+            v.planets_visited.append(pid)
+            self._notify_agency_visit(src)
+
+    def _notify_agency_visit(self, planet):
+        v = self.vessel
+        shared = getattr(v, "shared", None)
+        if not shared:
+            return
+        udp = getattr(shared, "udp_server", None)
+        if not udp:
+            return
+
+        agency = shared.agencies.get(v.agency_id)
+        if not agency:
+            return
+
+        name = getattr(planet, "name", f"Planet {getattr(planet, 'object_id', 0)}")
+        msg = f"Probe inspected {name}."
+        try:
+            loop = getattr(shared, "main_loop", None)
+            if loop and loop.is_running():
+                import asyncio
+                asyncio.run_coroutine_threadsafe(udp.notify_agency(agency.id64, 2, msg), loop)
+        except Exception as e:
+            print(f"⚠️ probe notify failed: {e}")
+
+    def _perijove_multiplier(self) -> float:
+        """×2 if PERIJOVE is unlocked and we are within 4×R of a gas giant."""
+        v = self.vessel
+        unlocked = v.current_payload_unlocked()
+        if int(T_UP.PERIJOVE) not in unlocked:
+            return 1.0
+
+        src = getattr(v, "strongest_gravity_source", None)
+        if not isinstance(src, Planet):
+            return 1.0
+        if not bool(getattr(src, "is_gas_giant", False)):
+            return 1.0
+
+        R = float(getattr(src, "radius_km", 0.0))
+        if R <= 0.0:
+            return 1.0
+
+        dx = float(v.position[0]) - float(src.position[0])
+        dy = float(v.position[1]) - float(src.position[1])
+        dist_km = math.hypot(dx, dy)
+        return 1.3 if dist_km <= 4.0 * R else 1.0
+
+    def _aacs_multiplier(self) -> float:
+        """×2 if AACS unlocked and pointing within 5° of home planet."""
+        v = self.vessel
+        unlocked = v.current_payload_unlocked()
+        if int(T_UP.AACS) not in unlocked:
+            return 1.0
+        home = getattr(v, "home_planet", None)
+        if not isinstance(home, Planet):
+            return 1.0
+
+        # Aim is -v.rotation (same convention as telescope)
+        aim_deg = -float(v.rotation)
+        dx = float(home.position[0]) - float(v.position[0])
+        dy = float(home.position[1]) - float(v.position[1])
+        to_home_deg = math.degrees(math.atan2(dy, dx))
+        delta = shortest_delta_deg(aim_deg, to_home_deg)
+        return 1.4 if abs(delta) <= 5.0 else 1.0
+
+    def on_tick(self, dt: float):
+        v = self.vessel
+        if v.stage != 0:
+            return
+
+        # 1) Check for new visit (strongest puller only, no moons)
+        self._maybe_mark_visit()
+
+        # 2) Income payout
+        agency = v.shared.agencies.get(v.agency_id)
+        if not agency:
+            return
+
+        gs = float(getattr(v.shared, "gamespeed", 1.0))
+        seconds = dt / max(1e-9, gs)
+
+        base_income = float(v.stats.get("income", {}).get("base") or v._payload_base_income() or 0.0)
+        if base_income <= 0.0:
+            return
+
+        # Only count unique visits (should already be unique, but guard anyway)
+        visited_count = len(set(v.planets_visited))
+        if visited_count <= 0:
+            return
+
+        global_mult  = float(getattr(agency, "global_cash_multiplier", 1.0))
+        regional_mult = v.planet_income_multiplier()
+
+        # Apply situational multipliers
+        situational_mult = self._perijove_multiplier() * self._aacs_multiplier()
+
+        payout = base_income * visited_count * situational_mult * global_mult * regional_mult * seconds
+        if payout > 0.0:
+            agency.distribute_money(payout)
+            v.credit_income(payout)
+
+
+SUN_RADIUS_KM = 696_340.0
+
+
+class SolarOrbiter(PayloadBehavior):
+    """
+    Income scales with proximity to the Sun via an aggressive curve:
+      - multiplier = 20 at the Sun's radius
+      - decays exponentially to 1 by 0.5 AU
+      - decays below 1 beyond 0.5 AU toward 0
+      - clamped to [0, 20]
+    """
+
+    # Tunables (per AU)
+    K_NEAR = 5.0   # curvature inside 0.5 AU (20 -> 1)
+    K_FAR  = 2.0   # curvature beyond 0.5 AU (1 -> 0)
+
+    def _solar_mult_from_distance_au(self, r_au: float) -> float:
+        """Return the proximity multiplier in [0, 20] given distance in AU."""
+        # Protect against being *inside* the photosphere:
+        sun_radius_au = max(1e-9, float(SUN_RADIUS_KM) / float(AU_KM))
+        r = max(r_au, sun_radius_au)
+
+        r1 = 0.5  # AU where multiplier should be exactly 1
+
+        if r <= r1:
+            # Exponential that maps r = sun_radius_au -> 20, and r = 0.5 AU -> 1
+            # m(r) = 1 + 19 * [exp(-k*(r - R)) - exp(-k*(r1 - R))] / [1 - exp(-k*(r1 - R))]
+            k = self.K_NEAR
+            num = math.exp(-k * (r - sun_radius_au)) - math.exp(-k * (r1 - sun_radius_au))
+            den = 1.0 - math.exp(-k * (r1 - sun_radius_au))
+            m = 1.0 + 19.0 * (num / max(1e-12, den))
+        else:
+            # Past 0.5 AU, decay below 1 toward 0
+            k = self.K_FAR
+            m = math.exp(-k * (r - r1))
+
+        # Clamp
+        if m < 0.0: m = 0.0
+        if m > 20.0: m = 20.0
+        return m
+
+    def on_tick(self, dt: float):
+        v = self.vessel
+        if v.stage != 0:
+            return
+
+        agency = v.shared.agencies.get(v.agency_id)
+        if not agency:
+            return
+
+        # Real seconds
+        gs = float(getattr(v.shared, "gamespeed", 1.0))
+        seconds = dt / max(1e-9, gs)
+
+        base_income = float(v.stats.get("income", {}).get("base") or v._payload_base_income() or 0.0)
+        if base_income <= 0.0:
+            return
+
+        # Distance to Sun assumed from origin (0,0) like your solar helper
+        rx, ry = v.position
+        dist_km = math.hypot(rx, ry)
+        r_au = dist_km / float(AU_KM)
+
+        mult = self._solar_mult_from_distance_au(r_au)  # 0..20
+
+        if mult <= 0.0:
+            return
+
+        global_mult  = float(getattr(agency, "global_cash_multiplier", 1.0))
+        regional_mult = v.planet_income_multiplier()  # typically 1.0 here
+
+        payout = base_income * mult * global_mult * regional_mult * seconds
+        if payout > 0.0:
+            agency.distribute_money(payout)
+            v.credit_income(payout)

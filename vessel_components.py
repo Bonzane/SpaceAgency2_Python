@@ -28,3 +28,5 @@ class Components(IntEnum):
     LUNAR_LANDER_F = 24
     LUNAR_LANDER_P = 25
     SPACE_SHUTTLE = 26
+    ROVER = 27
+    SOLAR_ORBITER = 28

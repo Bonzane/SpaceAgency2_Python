@@ -15,18 +15,19 @@
                 "5" : 500000, 
                 "6" : 600000,
                 "7" : 700000,
-                "8" : 800000
+                "8" : 800000,
+                "9" : 900000
             },
             "attributes" : {
                 "base_income" : 200,
                 "buildinglevel_unlocks" : {
                     "1" : {
                         "unlock_buildings" : [1, 2],
-                        "unlock_components" : [1, 2, 3, 4, 5, 6]
+                        "unlock_components" : [1, 2, 3, 4, 6]
                     }, 
                     "2" : {
                         "unlock_buildings" : [3, 4, 5],
-                        "unlock_components" : [7, 8, 9, 10, 12, 13]
+                        "unlock_components" : [7, 8, 9, 10, 13]
                     },
                     "3" : {
                         "unlock_buildings" : [6],
@@ -49,6 +50,9 @@
                         "unlock_components" : [23]
                     },
                     "8" : {
+                        "unlock_components" : [27]
+                    },
+                    "9" : {
                         "unlock_components" : [26]
                     }
                 }
@@ -140,12 +144,21 @@
             "name" : "Reception Dish", 
             "cost" : 100000, 
             "build_time" : 18,
-            "upgrade_costs" : {},
+            "upgrade_costs" : {
+                "2" : 150000,
+                "3" : 250000
+            },
             "description" : "Unlocks Probes and probe upgrades",
             "attributes" : {
                 "buildinglevel_unlocks" : {
                     "1" : {
                         "unlock_components" : [11]
+                    },
+                    "2" : {
+                        "probe_max_upgrade_tier" : 2
+                    },
+                    "3" : {
+                        "unlock_components" : [28]
                     }
                 }
             }
@@ -343,7 +356,8 @@
         "global_cash_multiplier" : 1.0,
         "global_build_time_multiplier" : 1.0, 
         "satellite_bonus_income" : 0,
-        "satellite_max_upgrade_tier" : 1
+        "satellite_max_upgrade_tier" : 1,
+        "probe_max_upgrade_tier" : 1
     }, 
     "components" : [
         {
@@ -631,7 +645,7 @@
             "mass" : 220,
             "attributes" : {
                 "is-payload" : 1,
-                "payload_base_income" : 500, 
+                "payload_base_income" : 400, 
                 "liquid-fuel" : 1000,
                 "forward-thrust" : 5,
                 "forward-fuel-consumption" : 4,
@@ -1153,7 +1167,82 @@
                 }
             ]
 
-        }                                                                       
+        }, 
+        {
+            "id" : 27,
+            "category" : "payload",
+            "name" : "Rover", 
+            "cost" : 1000000,
+            "mass" : 150,
+            "attributes" : {
+                "is-payload" : 1,
+                "deploy-landed" : 1
+            }, 
+            "snap_points" : [
+                {
+                    "x" : 0,
+                    "y" : 0,
+                    "snaps_accepted" : ["payload-receive"],
+                    "snaps_provided" : ["payload-give"]
+                }
+            ]
+
+        }  ,
+        {
+            "id" : 28,
+            "category" : "payload",
+            "name" : "Solar Orbiter", 
+            "cost" : 200000,
+            "resource_cost" : {
+                "10" : 0
+            },
+            "mass" : 220,
+            "attributes" : {
+                "is-payload" : 1,
+                "payload_base_income" : 900, 
+                "liquid-fuel" : 800,
+                "forward-thrust" : 4,
+                "forward-fuel-consumption" : 4,
+                "forward-fire-output-point" : [0, 104],
+                "forward-fire-appearance" : 4,
+                "forward-ignition-sound" : 1,
+                "forward-thrust-sound" : 1,
+                "ccw-thrust" : 4,
+                "ccw-fuel-consumption" : 5,
+                "ccw-fire-output-point" : [-15, 134],
+                "ccw-fire-appearance" : 4,
+                "ccw-ignition-sound" : 1,
+                "ccw-thrust-sound" : 1,
+                "ccw-thrust-direction" : 85, 
+                "ccw-fire-angle-offset" : -55, 
+                "cw-thrust" : 4,
+                "cw-fuel-consumption" : 5,
+                "cw-fire-output-point" : [15, 134],
+                "cw-fire-appearance" : 4,
+                "cw-ignition-sound" : 1,
+                "cw-thrust-sound" : 1,
+                "cw-thrust-direction" : -85, 
+                "cw-fire-angle-offset" : 55,
+                "forward-fire-heat" : 2,
+                "ccw-fire-heat" : 2,
+                "cw-fire-heat" : 2,
+                "thermal-resistance" : 7,
+                "thermal-regulation" : 4,
+                "thermal-regulation-power-draw" : 3,
+                "solar-power" : 8,
+                "power-capacity" : 2500
+
+            }, 
+            "snap_points" : [
+                {
+                    "x" : 0,
+                    "y" : 0,
+                    "snaps_accepted" : ["payload-receive"],
+                    "snaps_provided" : ["payload-give"]
+                }
+            ]
+
+        }                                                                                        
     ]
         
 }

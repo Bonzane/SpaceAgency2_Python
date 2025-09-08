@@ -15,6 +15,11 @@ class T_UP(IntEnum):
     ZOOM1        = 0x0007    
     FOCUS2       = 0x0008
     PLANET_IMAGE = 0x0009
+    FLYBY1       = 0x000A 
+    FLYBY2       = 0x000B
+    PERIJOVE     = 0x000C
+    AACS         = 0x000D
+
 
 @dataclass(frozen=True)
 class UpgradeNode:
@@ -38,5 +43,11 @@ UPGRADE_TREES_BY_PAYLOAD: Dict[int, Dict[int, UpgradeNode]] = {
         T_UP.ZOOM1:        UpgradeNode(T_UP.ZOOM1,         1, [T_UP.EXPOSURE1],        75000),
         T_UP.FOCUS2:       UpgradeNode(T_UP.FOCUS2,        1, [T_UP.FOCUS1],           35000),
         T_UP.PLANET_IMAGE:  UpgradeNode(T_UP.PLANET_IMAGE,   1, [T_UP.RESOLUTION1],    55000)
+    },
+    int(Components.PROBE): {
+        T_UP.FLYBY1:       UpgradeNode(T_UP.FLYBY1,           1, [],                      10000),
+        T_UP.FLYBY2:       UpgradeNode(T_UP.FLYBY2,        2, [T_UP.FLYBY2],           30000),
+        T_UP.PERIJOVE:     UpgradeNode(T_UP.PERIJOVE,   1, [],                      100000),
+        T_UP.AACS:        UpgradeNode(T_UP.AACS,         1, [],        125000),
     }
 }

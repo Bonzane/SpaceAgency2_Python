@@ -155,11 +155,14 @@ class Planet(PhysicsObject):
     _region_edges: List[float] = field(default_factory=list, init=False, repr=False)
     _region_ids:   List[int]   = field(default_factory=list, init=False, repr=False)
 
-    # Resource map. {Item: probability weight}
+    # Resource map.
     resource_map: Dict[int, float] = field(default_factory=dict, init=False, repr=False)
 
     planet_surface_temp: float = 20.0
 
+    is_gas_giant: bool = False
+    is_star: bool = False
+    is_moon: bool = False
 
     def set_regions(self, regions: Dict[int, float]) -> None:
         self.regions_km = dict(regions)
@@ -229,6 +232,7 @@ class Sun(Planet):
             atmosphere_density=1.0,
             name="The Sun"
         )
+        self.is_star = True
         self.set_temperature(5778.0)
 
     def do_update(self, dt: float, acc: Tuple[float, float]):
@@ -386,6 +390,7 @@ class Jupiter(Planet):
         })
 
         self.set_temperature(165.0)
+        self.is_gas_giant = True
 
     def do_update(self, dt: float, acc: Tuple[float, float]):
         super().do_update(dt, acc)
@@ -412,6 +417,7 @@ class Saturn(Planet):
         })
 
         self.set_temperature(134.0)
+        self.is_gas_giant = True
 
     def do_update(self, dt: float, acc: Tuple[float, float]):
         super().do_update(dt, acc)
@@ -438,6 +444,7 @@ class Uranus(Planet):
         })
 
         self.set_temperature(76.0)
+        self.is_gas_giant = True
 
     def do_update(self, dt: float, acc: Tuple[float, float]):
         super().do_update(dt, acc)
@@ -464,6 +471,7 @@ class Neptune(Planet):
         })
 
         self.set_temperature(72.0)
+        self.is_gas_giant = True
 
     def do_update(self, dt: float, acc: Tuple[float, float]):
         super().do_update(dt, acc)
@@ -503,7 +511,7 @@ class Luna(Planet):
         )
 
         self.set_temperature(220.0)
-
+        self.is_moon = True
         self.set_regions({
             Region.MOON_NEAR: 50_000
         })

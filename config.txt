@@ -9,7 +9,7 @@
 🚀  Game - Which game does the server launch?
 🚀 -----------------------------------------
 
-game.path ./gameData/devGame/
+game.path ./gameData/devGame2/
 🚀 Relative path reccomended
 
 

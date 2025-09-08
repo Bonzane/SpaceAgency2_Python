@@ -114,6 +114,10 @@ class Vessel(PhysicsObject):
     telescope_range_km: float = AU_KM
     telescope_fov_deg: float = 40.0
 
+    #---Probes---
+    planets_visited: List[int] = field(default_factory=list)
+
+
     fuel_by_stage: Dict[int, float] = field(default_factory=dict, repr=False)
     capacity_by_stage: Dict[int, float] = field(default_factory=dict, repr=False)
     power_by_stage: Dict[int, float] = field(default_factory=dict, repr=False)
@@ -716,7 +720,7 @@ class Vessel(PhysicsObject):
                 print(f"[Vessel] payload on_tick error: {e}")
 
     def _max_tier_for_current_payload(self) -> int:
-        """Gate by agency attributes; only comm-sat uses satellite_max_upgrade_tier."""
+        """Gate by agency attributes"""
         agency = self.shared.agencies.get(self.agency_id)
         if not agency:
             return 0
@@ -724,14 +728,31 @@ class Vessel(PhysicsObject):
         from vessel_components import Components
         if int(self.payload) == int(Components.COMMUNICATIONS_SATELLITE):
             return int(agency.attributes.get("satellite_max_upgrade_tier", 1))
+        if int(self.payload) == int(Components.PROBE):
+            return int(agency.attributes.get("probe_max_upgrade_tier", 1))
         # Other payload types can have their own attrs later
         return 999
 
 
     def check_deployment_ready(self):
+        # default: not ready
         self.deployment_ready = False
-        if(self.stage == 1 and self.altitude >= (self.home_planet.atmosphere_km * .98)):
-            self.deployment_ready = True
+
+        # Only care when we’re about to drop from stage 1 -> 0
+        if self.stage != 1 or not self.home_planet:
+            return
+
+        # Payload rule from its component attributes
+        wants_landed = bool(int(self._payload_attr("deploy-landed", 0)))
+
+        if wants_landed:
+            # Rovers, landers, etc. — must be landed
+            self.deployment_ready = bool(self.landed)
+        else:
+            # Space payloads — must be at (≈) top of atmosphere and not landed
+            atm = float(getattr(self.home_planet, "atmosphere_km", 0.0))
+            self.deployment_ready = (not self.landed) and (self.altitude >= atm * 0.98)
+
 
 
     def _rel_speed_to(self, body) -> float:

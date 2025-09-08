@@ -1,11 +1,13 @@
 # payload_registry.py
 from vessel_components import Components
-from payload_behavior import CommsSatellite, SpaceTelescope, PayloadBehavior
+from payload_behavior import *
 
 # Map *int* payload ids to behavior classes
 REGISTRY = {
     int(Components.COMMUNICATIONS_SATELLITE): CommsSatellite,
     int(Components.SPACE_TELESCOPE):          SpaceTelescope,
+    int(Components.PROBE):                    Probe,
+    int(Components.SOLAR_ORBITER):            SolarOrbiter
 }
 
 def make_payload_behavior(vessel):

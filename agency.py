@@ -236,7 +236,9 @@ class Agency:
                 max_tier = effects.get("satellite_max_upgrade_tier")
                 if isinstance(max_tier, int) and max_tier > attrs.get("satellite_max_upgrade_tier", 0):
                     attrs["satellite_max_upgrade_tier"] = max_tier
-
+                max_tier = effects.get("probe_max_upgrade_tier")
+                if isinstance(max_tier, int) and max_tier > attrs.get("probe_max_upgrade_tier", 0):
+                    attrs["probe_max_upgrade_tier"] = max_tier
                 # --- per-planet storage capacity ---
                 add_storage = int(effects.get("add_base_storage", 0))
                 if add_storage:
