@@ -223,7 +223,7 @@
             "resource_cost" : {
             },
             "attributes" : {
-                "base_income" : 200,
+                "base_income" : 300,
                 "buildinglevel_unlocks" : {
                     "1" : {
                         "unlock_buildings" : [10]
@@ -437,7 +437,7 @@
             "mass" : 150,
             "attributes" : {
                 "is-payload" : 1,
-                "payload_base_income" : 350,
+                "payload_base_income" : 150,
                 "power-capacity" : 1000,
                 "solar-power" : 5
             }, 
@@ -456,7 +456,7 @@
             "category" : "engine",
             "name" : "Standard Thruster", 
             "cost" : 20000,
-            "mass" : 150,
+            "mass" : 250,
             "attributes" : {
                 "forward-thrust" : 70, 
                 "forward-fuel-consumption" : 15, 
@@ -511,7 +511,7 @@
             "category" : "engine",
             "name" : "Eco Thruster", 
             "cost" : 25000,
-            "mass" : 160,
+            "mass" : 260,
             "attributes" : {
                 "forward-thrust" : 60,
                 "forward-fuel-consumption" : 10,
@@ -535,7 +535,7 @@
             "category" : "engine",
             "name" : "Flash Booster", 
             "cost" : 32000,
-            "mass" : 145,
+            "mass" : 245,
             "attributes" : {
                 "forward-thrust" : 85,
                 "forward-fuel-consumption" : 28,
@@ -561,7 +561,7 @@
             "cost" : 10000,
             "mass" : 12,
             "attributes" : {
-                "cw-thrust" : 5,
+                "cw-thrust" : 9,
                 "cw-fuel-consumption" : 1,
                 "cw-fire-output-point" : [-48, 48], 
                 "cw-ignition-sound" : 4, 
@@ -587,7 +587,7 @@
             "cost" : 10000,
             "mass" : 12,
             "attributes" : {
-                "ccw-thrust" : 5,
+                "ccw-thrust" : 9,
                 "ccw-fuel-consumption" : 1,
                 "ccw-fire-output-point" : [48, 48], 
                 "ccw-ignition-sound" : 4, 
@@ -611,7 +611,7 @@
             "category" : "engine",
             "name" : "Reversible Thruster", 
             "cost" : 40000,
-            "mass" : 155,
+            "mass" : 255,
             "attributes" : {
                 "forward-thrust" : 70,
                 "forward-fuel-consumption" : 15,
@@ -645,10 +645,12 @@
             "mass" : 220,
             "attributes" : {
                 "is-payload" : 1,
+                "nuclear-power" : 9,
+                "power-capacity" : 500,
                 "payload_base_income" : 400, 
                 "liquid-fuel" : 1000,
-                "forward-thrust" : 5,
-                "forward-fuel-consumption" : 4,
+                "forward-thrust" : 12,
+                "forward-fuel-consumption" : 5,
                 "forward-fire-output-point" : [0, 104],
                 "forward-fire-appearance" : 4,
                 "forward-ignition-sound" : 1,
@@ -671,7 +673,9 @@
                 "cw-fire-angle-offset" : 55,
                 "forward-fire-heat" : 2,
                 "ccw-fire-heat" : 2,
-                "cw-fire-heat" : 2
+                "cw-fire-heat" : 2,
+                "magnetometer" : 1,
+                "magnetometer-power-draw" : 10
 
             }, 
             "snap_points" : [
@@ -1032,7 +1036,7 @@
             "category" : "fairing",
             "name" : "Lunar Lander", 
             "cost" : 30000,
-            "mass" : 0,
+            "mass" : 120,
             "attributes" : {
                 "auto-fill-payload" : 25,
                 "stage-add": 1
@@ -1058,10 +1062,11 @@
             "category" : "payload",
             "name" : "Lunar Lander", 
             "cost" : 0,
-            "mass" : 100,
+            "mass" : 700,
             "attributes" : {
                 "is-payload" : 1,
-                "liquid-fuel" : 300,
+                "seats" : 2,
+                "liquid-fuel" : 350,
                 "forward-thrust" : 5,
                 "forward-fuel-consumption" : 3,
                 "forward-fire-output-point" : [0, 128],

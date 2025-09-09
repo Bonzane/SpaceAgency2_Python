@@ -583,6 +583,7 @@ class ControlServer:
         components = vessel.components
         packet += struct.pack('<H', vessel.num_stages)     # u16 num stages
         packet += struct.pack('<H', vessel.stage)
+        packet += struct.pack('<H',  vessel.seats_capacity)
         packet += struct.pack('<H', len(components))       # u16 component count
         for comp in components:
             packet += struct.pack('<HhhHHH', comp.id, comp.x, comp.y, comp.stage, comp.paint1, comp.paint2)  # u16, i16, u16, u16, u16
@@ -842,6 +843,148 @@ class StreamingServer:
             except Exception:
                 pass
 
+        elif data[0] == DataGramPacketType.BOARD_ASTRONAUT:
+            # [1] opcode + [4] astronaut_id (u32) + [8] vessel_id (u64)
+            if len(data) < 1 + 4 + 8:
+                print("⚠️ BOARD_ASTRONAUT: packet too short")
+                return
+
+            astro_id  = int.from_bytes(data[1:5],  'little', signed=False)
+            vessel_id = int.from_bytes(data[5:13], 'little', signed=False)
+
+            key = (ip, port)
+            session = self.shared.udp_endpoint_to_session.get(key)
+            if not session or not session.alive:
+                print(f"❌ Unknown or dead session for {key}")
+                return
+            player = getattr(session, "player", None)
+            if not player:
+                print(f"❌ No player bound to session {getattr(session, 'temp_id', 0)}")
+                return
+
+            # find vessel in player's current chunk
+            chunk_key = (player.galaxy, player.system)
+            chunk = self.shared.chunk_manager.loaded_chunks.get(chunk_key)
+            if not chunk:
+                self._udp_send_to_session(session, self.build_notification_packet(1, "Board failed: chunk not loaded"))
+                return
+            vessel = chunk.get_object_by_id(vessel_id)
+            if not vessel:
+                self._udp_send_to_session(session, self.build_notification_packet(1, "Board failed: vessel not found"))
+                return
+
+            # agency ownership check (change to require controller if you want)
+            if getattr(vessel, "agency_id", None) != getattr(player, "agency_id", None):
+                self._udp_send_to_session(session, self.build_notification_packet(1, "Board failed: not your agency's vessel"))
+                return
+
+            agency = self.shared.agencies.get(player.agency_id)
+            if not agency:
+                self._udp_send_to_session(session, self.build_notification_packet(1, "Board failed: agency not found"))
+                return
+
+            ok, reason = agency.move_astronaut_to_vessel(astro_id, vessel)
+            if ok:
+                name = getattr(agency.astronauts.get(astro_id), "name", f"Astronaut {astro_id}")
+                self._udp_send_to_session(session, self.build_notification_packet(2, f"{name} boarded."))
+                # UI will catch up via next agency gamestate tick
+                print(f"🧑‍🚀 BOARD ok: astro={astro_id} -> vessel={vessel_id}")
+            else:
+                self._udp_send_to_session(session, self.build_notification_packet(1, f"Board failed: {reason}"))
+                print(f"🧑‍🚀 BOARD fail({reason}): astro={astro_id} -> vessel={vessel_id}")
+
+        elif data[0] == DataGramPacketType.UNBOARD_ASTRONAUT:
+            # [1] opcode + [4] astronaut_id (u32) + [8] vessel_id (u64)
+            if len(data) < 1 + 4 + 8:
+                print("⚠️ UNBOARD_ASTRONAUT: packet too short")
+                return
+
+            astro_id  = int.from_bytes(data[1:5],  'little', signed=False)
+            vessel_id = int.from_bytes(data[5:13], 'little', signed=False)
+
+            key = (ip, port)
+            session = self.shared.udp_endpoint_to_session.get(key)
+            if not session or not session.alive:
+                print(f"❌ Unknown or dead session for {key}")
+                return
+            player = getattr(session, "player", None)
+            if not player:
+                print(f"❌ No player bound to session {getattr(session, 'temp_id', 0)}")
+                return
+
+            chunk_key = (player.galaxy, player.system)
+            chunk = self.shared.chunk_manager.loaded_chunks.get(chunk_key)
+            if not chunk:
+                self._udp_send_to_session(session, self.build_notification_packet(1, "Unboard failed: chunk not loaded"))
+                return
+            vessel = chunk.get_object_by_id(vessel_id)
+            if not vessel:
+                self._udp_send_to_session(session, self.build_notification_packet(1, "Unboard failed: vessel not found"))
+                return
+
+            if getattr(vessel, "agency_id", None) != getattr(player, "agency_id", None):
+                self._udp_send_to_session(session, self.build_notification_packet(1, "Unboard failed: not your agency's vessel"))
+                return
+
+            agency = self.shared.agencies.get(player.agency_id)
+            if not agency:
+                self._udp_send_to_session(session, self.build_notification_packet(1, "Unboard failed: agency not found"))
+                return
+
+            ok, reason = agency.move_astronaut_off_vessel(astro_id, vessel)
+            if ok:
+                name = getattr(agency.astronauts.get(astro_id), "name", f"Astronaut {astro_id}")
+                self._udp_send_to_session(session, self.build_notification_packet(2, f"{name} unboarded."))
+                print(f"🧑‍🚀 UNBOARD ok: astro={astro_id} <- vessel={vessel_id}")
+            else:
+                self._udp_send_to_session(session, self.build_notification_packet(1, f"Unboard failed: {reason}"))
+                print(f"🧑‍🚀 UNBOARD fail({reason}): astro={astro_id} <- vessel={vessel_id}")
+
+        elif data[0] == DataGramPacketType.CHANGE_ASTRONAUT_SUIT:
+            # [1] opcode + [4] astronaut_id (u32) + [2] suit_id (u16)
+            if len(data) < 1 + 4 + 2:
+                print("⚠️ CHANGE_ASTRONAUT_SUIT: packet too short")
+                return
+
+            astro_id = int.from_bytes(data[1:5], 'little', signed=False)
+            suit_id  = int.from_bytes(data[5:7], 'little', signed=False)
+
+            key = (ip, port)
+            session = self.shared.udp_endpoint_to_session.get(key)
+            if not session or not session.alive:
+                print(f"❌ Unknown or dead session for {key}")
+                return
+            player = getattr(session, "player", None)
+            if not player:
+                print(f"❌ No player bound to session {getattr(session, 'temp_id', 0)}")
+                return
+
+            agency = self.shared.agencies.get(getattr(player, "agency_id", 0))
+            if not agency:
+                self._udp_send_to_session(session, self.build_notification_packet(1, "Suit change failed: agency not found"))
+                return
+
+            # ownership: astronaut must belong to this agency
+            astro = agency.astronauts.get(int(astro_id))
+            if not astro or int(getattr(astro, "agency_id", -1)) != int(agency.id64):
+                self._udp_send_to_session(session, self.build_notification_packet(1, "Suit change failed: astronaut not found or not yours"))
+                return
+
+            # apply
+            ok, reason = agency.set_astronaut_suit(astro_id, suit_id) if hasattr(agency, "set_astronaut_suit") else (True, "ok")
+            if ok:
+                # if no helper, set directly:
+                if not hasattr(agency, "set_astronaut_suit"):
+                    s = suit_id if suit_id >= 0 else 0
+                    astro.suit_id = int(s)
+
+                name = getattr(astro, "name", f"Astronaut {astro_id}")
+                self._udp_send_to_session(session, self.build_notification_packet(2, f"{name}'s suit set to {int(astro.suit_id)}."))
+                print(f"🧑‍🚀 Suit changed: astro={astro_id} -> suit={int(astro.suit_id)}")
+                # UI will pick this up on the next agency gamestate tick
+            else:
+                self._udp_send_to_session(session, self.build_notification_packet(1, f"Suit change failed: {reason}"))
+                print(f"🧑‍🚀 Suit change failed({reason}): astro={astro_id} -> suit={suit_id}")
 
 
 
@@ -867,6 +1010,7 @@ class StreamingServer:
         components = vessel.components
         packet += struct.pack('<H', vessel.num_stages)
         packet += struct.pack('<H', vessel.stage)
+        packet += struct.pack('<H',  vessel.seats_capacity)
         packet += struct.pack('<H', len(components))
 
         for comp in components:
@@ -930,9 +1074,6 @@ class StreamingServer:
             if hasattr(session, "udp_port") and session.udp_port:
                 addr = (session.remote_ip, session.udp_port)
                 self.transport.sendto(packet, addr)
-
-
-
 
 
 

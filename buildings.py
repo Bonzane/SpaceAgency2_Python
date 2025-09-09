@@ -24,7 +24,7 @@ class Building:
         self.constructed = False
         self.level = 1
         #GET DEFAULT DATA ABOUT THIS TYPE OF BUILDING
-        self.default_data = self.shared.buildings_by_id.get(type, {})
+        self.default_data = self.shared.buildings_by_id.get(int(type), {})
         self.attributes = self.default_data.get("attributes", {})
         self.unlocks = self.attributes.get("buildinglevel_unlocks", {})
         self.planet_id = base
@@ -55,20 +55,22 @@ class Building:
 
     def do_building_effects(self):
         match(self.type):
+            case BuildingType.EARTH_HQ:
+                self.agency.ensure_min_astronauts_on_planet(planet_id=2, min_count=3)
             case BuildingType.MINING_RIG:
                 mining_odds = random.randrange(0, 1000)
-                success = (mining_odds < (50 * self.level))
-                if success:
-                    resource_map = self.planet_instance.resource_map
-                    resources = list(resource_map.keys())
-                    weights = list(resource_map.values())
-                    mined_resource = random.choices(resources, weights=weights, k=1)[0]
-                    base_current_inventory = self.agency.base_inventories.get(self.planet_id, {})
-                    total_inventory_count = sum(base_current_inventory.values())
-                    base_current_capacity = self.agency.base_inventory_capacities.get(self.planet_id, 0)
-                    if(total_inventory_count < base_current_capacity):
-                        base_current_inventory[mined_resource] = base_current_inventory.get(mined_resource, 0) + 1
-                        self.agency.base_inventories[self.planet_id] = base_current_inventory
+                if mining_odds < (50 * self.level):
+                    resource_map = getattr(self.planet_instance, "resource_map", {}) or {}
+                    if resource_map:
+                        resources = list(resource_map.keys())
+                        weights = list(resource_map.values())
+                        mined_resource = random.choices(resources, weights=weights, k=1)[0]
+                        inv = self.agency.base_inventories.get(self.planet_id, {})
+                        total = sum(inv.values())
+                        cap = self.agency.base_inventory_capacities.get(self.planet_id, 0)
+                        if total < cap:
+                            inv[mined_resource] = inv.get(mined_resource, 0) + 1
+                            self.agency.base_inventories[self.planet_id] = inv
 
 
 
@@ -103,7 +105,7 @@ class Building:
 
     def to_json(self):            
         return {
-            "type": self.type,
+            "type": int(self.type),
             "constructed": self.constructed,
             "level": self.level,
             "construction_progress": self.construction_progress, 

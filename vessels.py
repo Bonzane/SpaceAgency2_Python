@@ -37,6 +37,7 @@ class VesselState(IntEnum):
 class Systems(IntEnum):
     UNDEFINED = 0
     THERMAL_REGULATOR = 1
+    MAGNETOMETER = 2
 
 @dataclass
 class AttachedVesselComponent:
@@ -107,6 +108,8 @@ class Vessel(PhysicsObject):
     thermal_resistance: float = 100
     deployment_ready: bool = False
     unland_grace_time_s: float = 0.0
+    seats_capacity: int = 0
+    astronauts_onboard: List[int] = field(default_factory=list)
 
     #---Telescopes---
     telescope_rcs_angle: float = 0.0
@@ -125,6 +128,7 @@ class Vessel(PhysicsObject):
 
     #--- Electrical Systems ---
     systems: Dict[Systems, ElectricalSystem] = field(default_factory=dict, repr=False)
+    mag_push_accum: float = field(default=0.0, repr=False)
 
     #Upgrades
     unlocked_by_payload: Dict[int, Set[int]] = field(default_factory=dict)  # payload_id -> set[upgrade_id]
@@ -238,6 +242,16 @@ class Vessel(PhysicsObject):
         self.power_capacity         = float(self.stats["power"]["capacity"])
         self.telescope_fov_deg      = float(self.stats["telescope"]["fov_deg"])
         self.telescope_range_km     = float(self.stats["telescope"]["range_km"])
+
+        # seat capacity from payload attributes (default 0)
+        try:
+            self.seats_capacity = int(self._payload_attr("seats", 0))
+        except Exception:
+            self.seats_capacity = 0
+
+        # Clamp any excess occupants if payload changed
+        if len(self.astronauts_onboard) > self.seats_capacity:
+            self.astronauts_onboard = self.astronauts_onboard[: max(0, int(self.seats_capacity))]
 
 
     def _build_upgrades_dgram(self) -> bytes:
@@ -387,10 +401,16 @@ class Vessel(PhysicsObject):
                     float(attrs.get("thermal-regulation-power-draw", 0.0)),
                     True
                 )
+                self.add_system(
+                    Systems.MAGNETOMETER,
+                    float(attrs.get("magnetometer", 0.0)),
+                    float(attrs.get("magnetometer-power-draw", 0.0)),
+                    False
+                )
 
                 attached_tau_bonus += float(attrs.get("thermal-resistance", 0.0))
                 self.solar_power += float(attrs.get("solar-power", 0.0))
-                self.nuclear_power += float(attrs.get("nuclear-power", 0.0))
+                self.nuclear_power += float(attrs.get("nuclear-power", 0.0)) * 0.1
                 self.armor += float(attrs.get("armor", 0.0))
 
         # set thermal resistance based on attached components
@@ -802,6 +822,125 @@ class Vessel(PhysicsObject):
             if self.z_velocity > 0.0:
                 self.z_velocity = 0.0
 
+    def _has_powered_magnetometer(self) -> bool:
+        sys = self.systems.get(Systems.MAGNETOMETER)
+        if not sys or not sys.active or sys.amount <= 0.0:
+            return False
+        if self.power <= 0.05 * self.power_capacity:
+            return False
+        # optional: only when fully deployed
+        # if self.stage != 0: return False
+        return True
+
+    def _compute_magnetometer_field(self):
+        """Returns (samples, net_dir_deg, net_strength). samples = [(body_id, dir_deg, strength, flags)]."""
+        try:
+            planets = [p for p in self._iter_planets_in_same_system() if not getattr(p, "is_moon", False)]
+        except Exception:
+            planets = []
+        if not planets:
+            return [], 0.0, 0.0
+
+        vx, vy = self.position
+        MAX_RANGE_KM = AU_KM * 5.0     # tune for gameplay
+        SCALE        = 1.0e10          # tune to map to 0..1 strengths
+
+        contrib = []
+        for p in planets:
+            px, py = p.position
+            dx, dy = px - vx, py - vy
+            d = math.hypot(dx, dy)
+            if d <= 0.0 or d > MAX_RANGE_KM:
+                continue
+
+            r_km = float(getattr(p, "radius_km", 3000.0))
+            base_moment = (r_km ** 3) * (5.0 if getattr(p, "is_gas_giant", False) else 1.0)
+            moment = float(getattr(p, "magnetic_moment", base_moment))
+
+            strength = moment / (d ** 3)
+            strength = max(0.0, min(1.0, strength * SCALE))
+            if strength <= 1e-6:
+                continue
+
+            dir_deg = math.degrees(math.atan2(dy, dx))
+            flags = (1 if getattr(p, "is_gas_giant", False) else 0) | (2 if getattr(p, "is_moon", False) else 0)
+            ux, uy = (dx/d, dy/d)
+            contrib.append((int(p.object_id), dir_deg, strength, flags, ux, uy))
+
+        if not contrib:
+            return [], 0.0, 0.0
+
+        contrib.sort(key=lambda t: t[2], reverse=True)
+        top = contrib[:3]
+
+        nx = sum(s * ux for _id, _dir, s, _f, ux, _uy in top)
+        ny = sum(s * uy for _id, _dir, s, _f, _ux, uy in top)
+        net_len = math.hypot(nx, ny)
+        net_dir_deg = math.degrees(math.atan2(ny, nx)) if net_len > 1e-9 else 0.0
+        net_strength = max(0.0, min(1.0, net_len))
+
+        samples = [(i, float(d), float(s), int(f)) for i, d, s, f, _ux, _uy in top]
+        return samples, net_dir_deg, net_strength
+
+    def _build_magnetometer_packet(self, net_dir_deg: float, net_strength: float, samples: list) -> bytes:
+        pkt = bytearray()
+        pkt.append(int(DataGramPacketType.MAGNETOMETER_FIELD))
+        pkt += struct.pack('<Q', int(self.object_id))
+        pkt += struct.pack('<ff', float(net_dir_deg), float(net_strength))
+        pkt.append(min(len(samples), 255))
+        for body_id, dir_deg, strength, flags in samples[:255]:
+            pkt += struct.pack('<QffB', int(body_id), float(dir_deg), float(strength), int(flags) & 0xFF)
+        return bytes(pkt)
+
+    def _send_udp_to_controller(self, packet: bytes) -> bool:
+        shared = getattr(self, "shared", None)
+        if not (shared and getattr(shared, "udp_server", None) and shared.udp_server.transport):
+            return False
+        pid = int(getattr(self, "controlled_by", 0) or 0)
+        if not pid:
+            return False
+        player = shared.players.get(pid)
+        if not player:
+            return False
+        s = getattr(player, "session", None)
+        if not (s and s.alive and getattr(s, "udp_port", None)):
+            return False
+        addr = (s.remote_ip, s.udp_port)
+        shared.udp_server.transport.sendto(packet, addr)
+        return True
+
+    def _tick_magnetometer(self, real_dt: float):
+        """Call every tick with real seconds (dt/gamespeed). Sends ~5Hz while powered & controlled."""
+        if not self._has_powered_magnetometer():
+            self.mag_push_accum = 0.0
+            return
+        # only the controller should receive it
+        if not int(getattr(self, "controlled_by", 0)):
+            self.mag_push_accum = 0.0
+            return
+
+        # throttle
+        self.mag_push_accum += max(0.0, float(real_dt))
+        PERIOD = 0.20  # ~5 Hz
+        if self.mag_push_accum < PERIOD:
+            return
+        self.mag_push_accum = 0.0
+
+        # pay instrument power (skip send if no juice)
+        sys = self.systems.get(Systems.MAGNETOMETER)
+        draw = max(0.0, float(getattr(sys, "power_draw", 0.0))) * PERIOD
+        if draw > 0.0:
+            before = self.power
+            _ = self._draw_power(draw)
+            used = max(0.0, before - self.power)
+            if used < draw * 0.25:   # couldn’t cover at least 25% of the draw → skip this tick
+                return
+
+        samples, net_dir, net_str = self._compute_magnetometer_field()
+        if not samples:
+            return
+        pkt = self._build_magnetometer_packet(net_dir, net_str, samples)
+        self._send_udp_to_controller(pkt)
 
 
     # Extended Physics
@@ -852,6 +991,7 @@ class Vessel(PhysicsObject):
         
         scaled_dt = dt / max(1e-9, float(self.shared.gamespeed))
         self._tick_upgrade_tree_push(scaled_dt)
+        self._tick_magnetometer(scaled_dt)
 
         #4 - Charge Power
         if self.solar_power > 0.0:
@@ -903,7 +1043,12 @@ class Vessel(PhysicsObject):
         for sys_type, sys in self.systems.items():
             chunkpacket += struct.pack('<H', int(sys_type))        # system type
             chunkpacket += struct.pack('<B', 1 if sys.active else 0)
-
+        ids = getattr(self, "astronauts_onboard", [])
+        cnt = min(255, len(ids))                      # u8 count
+        chunkpacket += struct.pack('<B', cnt)
+        for i in range(cnt):
+            chunkpacket += struct.pack('<I', int(ids[i]) & 0xFFFFFFFF)
+            
         for player in self.shared.players.values():
             session = player.session
             if session and session.udp_port and session.alive:

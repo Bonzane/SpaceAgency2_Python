@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 import math
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Set, Optional
 import json
 import struct
 from upgrade_tree import T_UP
@@ -9,6 +9,10 @@ from packet_types import PacketType
 from buildings import Building, BuildingType
 import copy
 from vessels import Vessel
+from collections import defaultdict
+from astronaut import Astronaut
+
+EARTH_ID = 2
 
 @dataclass
 class Agency:
@@ -28,7 +32,9 @@ class Agency:
     base_inventories: Dict[int, Dict[int, int]] = field(default_factory=dict)
     base_inventory_capacities: Dict[int, int] = field(default_factory=dict)
     base_multipliers: Dict[int, float] = field(default_factory=dict)
-
+    astronauts: Dict[int, Astronaut] = field(default_factory=dict)
+    planet_to_astronauts: Dict[int, Set[int]] = field(default_factory=lambda: defaultdict(set))
+    _astro_seq: int = 0
     def __post_init__(self):
         default_building = Building(BuildingType.EARTH_HQ, self.shared, 7, 2, self)
         self.bases_to_buildings[2] = [default_building]
@@ -253,6 +259,207 @@ class Agency:
         #4) Also do the planet networking multiplier
         self.recompute_networking_multipliers()
 
+    def ensure_min_astronauts_on_planet(self, planet_id: int, min_count: int = 3) -> int:
+        """
+        Guarantee there are at least `min_count` astronauts living on `planet_id`
+        for this agency. Returns how many were spawned (0 if already satisfied).
+        """
+        planet_id = int(planet_id)
+        have = len(self.planet_to_astronauts.get(planet_id, set()))
+        spawned = 0
+        while have < min_count:
+            name = f"Astronaut {self._astro_seq}"
+            self._astro_seq += 1
+            self.create_astronaut(name=name, planet_id=planet_id)
+            have += 1
+            spawned += 1
+        if spawned:
+            print(f"👩‍🚀 Agency {self.id64}: spawned {spawned} astronaut(s) on planet {planet_id}")
+        return spawned
+
+    def create_astronaut(self, name: str, planet_id: Optional[int] = None, suit_id: int = 0,
+                        appearance_id: Optional[int] = None) -> Astronaut:
+        a = Astronaut(
+            name=name,
+            suit_id=int(suit_id),
+            appearance_id=(appearance_id if appearance_id is not None else None),
+            agency_id=int(getattr(self, "id64", 0)),
+            planet_id=planet_id,
+            vessel_id=None,
+        )
+        self.astronauts[a.id32] = a
+        if planet_id is not None:
+            self.planet_to_astronauts[int(planet_id)].add(a.id32)
+        return a
+
+    def add_astronaut(self, astro: Astronaut) -> None:
+        """Register an externally-constructed astronaut with this agency."""
+        astro.agency_id = int(getattr(self, "id64", 0))
+        self.astronauts[astro.id32] = astro
+        if astro.planet_id is not None:
+            self.planet_to_astronauts[int(astro.planet_id)].add(astro.id32)
+
+    def move_astronaut_to_planet(self, astro_id: int, planet_id: Optional[int]) -> bool:
+        a = self.astronauts.get(int(astro_id))
+        if not a:
+            return False
+        # Remove from prior planet bucket
+        if a.planet_id is not None:
+            self.planet_to_astronauts[int(a.planet_id)].discard(a.id32)
+        # Clear vessel if any (moving to planet)
+        a.vessel_id = None
+        a.planet_id = int(planet_id) if planet_id is not None else None
+        if a.planet_id is not None:
+            self.planet_to_astronauts[int(a.planet_id)].add(a.id32)
+        return True
+
+    def remove_astronaut(self, astro_id: int) -> bool:
+        a = self.astronauts.pop(int(astro_id), None)
+        if not a:
+            return False
+        if a.planet_id is not None:
+            self.planet_to_astronauts[int(a.planet_id)].discard(a.id32)
+        return True
+
+    def get_astronauts_on_planet(self, planet_id: int) -> List[Astronaut]:
+        return [self.astronauts[aid] for aid in self.planet_to_astronauts.get(int(planet_id), set())
+                if aid in self.astronauts]
+
+    # --- Seat & placement utilities ---
+
+    def _ensure_seat_list(self, vessel) -> list[int]:
+        """Make sure vessel has a list to track seated astronauts."""
+        if not hasattr(vessel, "seated_astronauts") or not isinstance(vessel.seated_astronauts, list):
+            vessel.seated_astronauts = []
+        return vessel.seated_astronauts
+
+    def seats_total_for(self, vessel) -> int:
+        return int(getattr(vessel, "seats_capacity", 0))
+
+    def seats_free_for(self, vessel) -> int:
+        seated = self._ensure_seat_list(vessel)
+        return max(0, self.seats_total_for(vessel) - len(seated))
+
+    def get_vessel_planet_id(self, vessel) -> Optional[int]:
+        """Determine the planet the vessel is 'on' when landed."""
+        src = getattr(vessel, "strongest_gravity_source", None) or getattr(vessel, "home_planet", None)
+        if not src:
+            return None
+        pid = int(getattr(src, "object_id", 0))
+        return pid if pid > 0 else None
+
+    def get_astronauts_in_vessel(self, vessel) -> list[Astronaut]:
+        ids = self._ensure_seat_list(vessel)
+        return [self.astronauts[aid] for aid in ids if aid in self.astronauts]
+
+    def set_astronaut_suit(self, astro_id: int, suit_id: int) -> tuple[bool, str]:
+        a = self.astronauts.get(int(astro_id))
+        if not a:
+            return False, "astronaut_not_found"
+        s = int(suit_id)
+        if s < 0:
+            s = 0
+        a.suit_id = s
+        return True, "ok"
+
+    # --- Core moves used by your UDP handlers ---
+    def _vessel_landed_planet_id(self, vessel) -> Optional[int]:
+        if not getattr(vessel, "landed", 0):
+            return None
+        pid = getattr(getattr(vessel, "strongest_gravity_source", None), "object_id", None)
+        if pid is None and getattr(vessel, "home_planet", None) is not None:
+            pid = getattr(vessel.home_planet, "object_id", None)
+        return int(pid) if pid is not None else None
+
+    def move_astronaut_to_vessel(self, astro_id: int, vessel) -> tuple[bool, str]:
+        astro_id = int(astro_id)
+        a = self.astronauts.get(astro_id)
+        if not a:
+            return False, "astronaut_not_found"
+
+        if not getattr(vessel, "landed", 0):
+            return False, "vessel_not_landed"
+
+        pid = self._vessel_landed_planet_id(vessel)
+        if pid is None:
+            return False, "no_landing_planet"
+
+        # must be on that planet and not already on a vessel
+        if a.planet_id != pid or a.vessel_id is not None:
+            return False, "astronaut_not_on_this_planet"
+
+        seats = int(getattr(vessel, "seats_capacity", 0))
+        if seats <= 0:
+            return False, "no_seats"
+
+        lst = getattr(vessel, "astronauts_onboard", None)
+        if lst is None:
+            vessel.astronauts_onboard = lst = []
+
+        if astro_id in lst:
+            return False, "already_onboard"
+        if len(lst) >= seats:
+            return False, "seats_full"
+
+        # move: planet -> vessel
+        self.planet_to_astronauts[pid].discard(astro_id)
+        a.planet_id = None
+        a.vessel_id = int(getattr(vessel, "object_id", 0))
+        lst.append(astro_id)
+        return True, "ok"
+
+    def move_astronaut_off_vessel(self, astro_id: int, vessel) -> tuple[bool, str]:
+        astro_id = int(astro_id)
+        a = self.astronauts.get(astro_id)
+        if not a:
+            return False, "astronaut_not_found"
+
+        if not getattr(vessel, "landed", 0):
+            return False, "vessel_not_landed"
+
+        lst = getattr(vessel, "astronauts_onboard", None)
+        if lst is None:
+            vessel.astronauts_onboard = lst = []
+
+        vid = int(getattr(vessel, "object_id", 0))
+        if a.vessel_id != vid and astro_id not in lst:
+            return False, "not_on_this_vessel"
+
+        pid = self._vessel_landed_planet_id(vessel)
+        if pid is None:
+            return False, "no_landing_planet"
+
+        # move: vessel -> planet
+        try:
+            lst.remove(astro_id)
+        except ValueError:
+            pass
+        a.vessel_id = None
+        a.planet_id = pid
+        self.planet_to_astronauts[pid].add(astro_id)
+        return True, "ok"
+
+    # --- Nice-to-haves (safe cleanup) ---
+
+    def disembark_all_to_planet(self, vessel) -> int:
+        """If a vessel is landed or being destroyed, move everyone aboard to the planet."""
+        pid = self.get_vessel_planet_id(vessel)
+        if pid is None:
+            # fallback: drop to Earth if unknown
+            pid = EARTH_ID
+        seated = self._ensure_seat_list(vessel)
+        moved = 0
+        for aid in list(seated):
+            a = self.astronauts.get(aid)
+            if not a:
+                seated.remove(aid)
+                continue
+            a.vessel_id = None
+            a.planet_id = pid
+            self.planet_to_astronauts[pid].add(aid)
+            seated.remove(aid)
+            moved += 1
+        return moved
 
 
 
@@ -443,6 +650,28 @@ class Agency:
             if abs(float(mult) - 1.0) > 1e-9
         }
 
+         # --- Astronauts: id64 -> astronaut json ---
+        astronauts_serialized = {}
+        for aid, a in self.astronauts.items():
+            if hasattr(a, "to_json"):
+                astronauts_serialized[int(aid)] = a.to_json()
+            else:
+                astronauts_serialized[int(aid)] = {
+                    "id": int(getattr(a, "id64", aid)),
+                    "name": getattr(a, "name", "Unnamed"),
+                    "suit": int(getattr(a, "suit_id", 0)),
+                    "appearance": int(getattr(a, "appearance_id", 0)),
+                    "planet": (int(a.planet_id) if getattr(a, "planet_id", None) is not None else None),
+                    "vessel": (int(a.vessel_id) if getattr(a, "vessel_id", None) is not None else None),
+                    "agency": int(getattr(a, "agency_id", getattr(self, "id64", 0))),
+                }
+
+        # --- Planet -> [astronaut ids] (sets -> lists) ---
+        astros_by_planet = {
+            int(pid): [int(aid) for aid in sorted(aids) if aid in self.astronauts]
+            for pid, aids in self.planet_to_astronauts.items()
+        }
+
         data = {
             "id": self.id64,
             "mbrs": self.members,
@@ -454,7 +683,9 @@ class Agency:
             "vsls": [v.get_id() for v in self.get_all_vessels()],
             "base_capacities": self.base_inventory_capacities,
             "base_inventories": self.base_inventories,
-            "base_multipliers": base_mults_diff
+            "base_multipliers": base_mults_diff,
+            "astronauts": astronauts_serialized,    
+            "astros_by_planet": astros_by_planet
         }
 
         payload = json.dumps(data, separators=(',', ':')).encode('utf-8')
