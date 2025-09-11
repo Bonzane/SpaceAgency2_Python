@@ -46,7 +46,7 @@ UPGRADE_TREES_BY_PAYLOAD: Dict[int, Dict[int, UpgradeNode]] = {
     },
     int(Components.PROBE): {
         T_UP.FLYBY1:       UpgradeNode(T_UP.FLYBY1,           1, [],                      10000),
-        T_UP.FLYBY2:       UpgradeNode(T_UP.FLYBY2,        2, [T_UP.FLYBY2],           30000),
+        T_UP.FLYBY2:       UpgradeNode(T_UP.FLYBY2,        2, [T_UP.FLYBY1],           30000),
         T_UP.PERIJOVE:     UpgradeNode(T_UP.PERIJOVE,   1, [],                      100000),
         T_UP.AACS:        UpgradeNode(T_UP.AACS,         1, [],        125000),
     }

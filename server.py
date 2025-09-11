@@ -250,6 +250,8 @@ class ServerMissionControl:
 
 
     def get_next_agency_id(self):
+        while self.next_available_agency_id in self.agencies:
+            self.next_available_agency_id += 1
         current = self.next_available_agency_id
         self.next_available_agency_id += 1
         return current

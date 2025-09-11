@@ -1,5 +1,6 @@
 #This file is all about game logic and file management
 
+import asyncio
 import os
 import pathlib
 import time
@@ -18,8 +19,8 @@ from chunk_manager import ChunkManager
 class Game:
     def __init__(self, root, tickrate, simrate, shared):
         self.active = False
-        self.base_path = pathlib.Path(root)
-        self.universe_path = self.base_path / "universe"
+        self.base_path = pathlib.Path(root).resolve()
+        self.universe_path = (self.base_path / "universe").resolve()
         self.chunk_manager = ChunkManager(shared, self.universe_path, self)
         self.simsec_per_tick = simrate / tickrate
         self.shared = shared
@@ -32,18 +33,19 @@ class Game:
             self.base_path.mkdir(parents=True)
             print(f"Directory created: {self.base_path}")
 
-        # Perform big bang if needed
-        if not (self.base_path / "bigBang.txt").exists():
+        # ✅ Properly detect existing game files and avoid overwriting them
+        if self._has_existing_game():
+            print(f"🟢 Found existing game at {self.universe_path}")
+            self.active = True
+        else:
             print("No game files detected. Performing Big Bang...")
             if self.big_bang():
                 self.active = True
-        else: 
-            self.active = True
 
-        #Load the game if the files are ready, otherwise apologize and beg for forgiveness. 
-        if self.active: 
-            self.load_game()    
-        else:   
+        # Load the game if ready
+        if self.active:
+            self.load_game()
+        else:
             print(f"The game failed to load. Check for errors. Sorry :(")
 
     async def _timer_broadcast_agency_list(self):
@@ -52,21 +54,67 @@ class Game:
             await asyncio.sleep(30)
 
 
+    def _has_existing_game(self) -> bool:
+        """
+        Consider the game 'existing' if any canonical save artifacts are present
+        under the *universe* path, not the base path.
+        """
+        try:
+            bb = (self.universe_path / "bigBang.txt")
+            if bb.exists() and bb.stat().st_size > 0:
+                return True
+
+            # First home system chunk
+            first_chunk = self.universe_path / "galaxies" / "1" / "systems" / "system_1.chunk"
+            if first_chunk.exists() and first_chunk.stat().st_size > 0:
+                return True
+
+            # Meta JSON (new snapshot format)
+            if (self.universe_path / "agencies.sa2.json").exists():
+                return True
+            if (self.universe_path / "players.sa2.json").exists():
+                return True
+
+            # Legacy placeholders (created by older Big Bang)
+            if (self.universe_path / "agencies.sa2").exists():
+                return True
+            if (self.universe_path / "players.sa2").exists():
+                return True
+
+        except Exception as e:
+            print(f"⚠️ Existing game detection error: {e}")
+        return False
+
+
 
     def big_bang(self):
         print("🌌 ---------- BIG BANG ----------")
         print("🚀 Creating universe, please wait...")
         try:
-            (self.universe_path / "galaxies" / "1" / "systems").mkdir(parents=True, exist_ok=True)
-            with open(self.universe_path / "bigBang.txt", "w") as f:
-                f.write(f"This universe was created on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-            with open(self.universe_path / "players.sa2", "w") as f:
-                self.playersdatafile = f
-            with open(self.universe_path / "agencies.sa2", "w") as f:
-                self.agenciesdatafile = f
+            systems_dir = (self.universe_path / "galaxies" / "1" / "systems")
+            systems_dir.mkdir(parents=True, exist_ok=True)
+
+            bb = (self.universe_path / "bigBang.txt")
+            if not bb.exists():
+                with open(bb, "w") as f:
+                    f.write(f"This universe was created on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+
+            # Legacy placeholder files: create if missing (harmless if unused)
+            pfile = (self.universe_path / "players.sa2")
+            afile = (self.universe_path / "agencies.sa2")
+            if not pfile.exists():
+                with open(pfile, "w") as f:
+                    self.playersdatafile = f
+            if not afile.exists():
+                with open(afile, "w") as f:
+                    self.agenciesdatafile = f
+
         except Exception as e:
-            print(f"❌ Failed to create base directories. (Does the server have permission to access your game path?)\nHere's the error: {e}")
+            print("❌ Failed to create base directories. "
+                  "(Does the server have permission to access your game path?)")
+            print(f"Here's the error: {e}")
             return False
+
         print("✅ Created Galaxies Directory")
         print("✅ Created Milky-Way Root Directory")
         print("✅ Created Milky-Way Systems Directory")
@@ -76,6 +124,7 @@ class Game:
         self.create_home_chunk()
 
         return True
+
 
     def load_game(self):
         # 1) Core
@@ -245,6 +294,12 @@ class Game:
                 agency.update_attributes()
 
                 print("✅ Loaded agencies")
+            if self.shared.agencies:
+                max_id = max(self.shared.agencies.keys())
+                # Always move the counter higher than the highest loaded ID
+                if max_id >= self.shared.next_available_agency_id:
+                    self.shared.next_available_agency_id = max_id + 1
+                print(f"🔢 Next agency ID set to {self.shared.next_available_agency_id}")
 
             # --- Players ---
             if players_path.exists():
@@ -309,16 +364,26 @@ class Game:
         return asteroids
 
     def create_universe_galaxymap(self):
-        chunk_path = self.universe_path / "intergalacticMap.sa2map" 
+        chunk_path = (self.universe_path / "intergalacticMap.sa2map").resolve()
+        if chunk_path.exists() and chunk_path.stat().st_size > 0:
+            print(f"⚠️ Not overwriting existing Galaxy Map at {chunk_path}")
+            return
         with open(chunk_path, "w") as file:
             file.write("0")
-  
+        print(f"✅ Created Universe Galaxy Map at {chunk_path}")
 
-        print("✅ Created Universe Galaxy Map")
 
     def create_home_chunk(self):
-        chunk_path = self.universe_path / "galaxies" / "1" / "systems" / "system_1.chunk"
+        import os
+        chunk_path = (self.universe_path / "galaxies" / "1" / "systems" / "system_1.chunk").resolve()
         print("🔧 Building Home Chunk")
+
+        # Idempotent: never overwrite an existing chunk
+        if chunk_path.exists() and chunk_path.stat().st_size > 0:
+            print(f"⚠️ Not overwriting existing Home Chunk at {chunk_path}")
+            print("✅ Created Home Chunk (skipped, already present)")
+            return
+
         self.sun = gameobjects.Sun()
         print("📍 Added The Sun")
         self.earth = gameobjects.Earth()
@@ -336,7 +401,9 @@ class Game:
 
         belt_asteroids = self.spawn_asteroid_belt(count=0)
 
-        with open(chunk_path, "wb") as file:
+        # Atomic write to avoid partial files
+        tmp = chunk_path.with_suffix(".chunk.tmp")
+        with open(tmp, "wb") as file:
             pickle.dump(
                 [
                     self.sun, self.earth, self.luna, self.mercury, self.venus,
@@ -345,16 +412,21 @@ class Game:
                 ],
                 file
             )
+            file.flush()
+            os.fsync(file.fileno())
+        os.replace(tmp, chunk_path)
 
-        print("✅ Created Home Chunk")
+        print(f"✅ Created Home Chunk at {chunk_path}")
 
 
     def create_milkyway_starmap(self):
-        chunk_path = self.universe_path / "galaxies" / "1" / "interstellarMap.sa2map"
+        chunk_path = (self.universe_path / "galaxies" / "1" / "interstellarMap.sa2map").resolve()
+        if chunk_path.exists() and chunk_path.stat().st_size > 0:
+            print(f"⚠️ Not overwriting existing Milky Way Starmap at {chunk_path}")
+            return
         with open(chunk_path, "w") as file:
             file.write("0")
-
-        print("✅ Created Milky Way Starmap")
+        print(f"✅ Created Milky Way Starmap at {chunk_path}")
 
 
 

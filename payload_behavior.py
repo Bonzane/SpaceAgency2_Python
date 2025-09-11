@@ -244,6 +244,40 @@ class Probe(PayloadBehavior):
     AACS:     ×2 income if pointing within 5° of home planet.
     """
 
+    def on_attach(self):
+            """When the probe becomes active (stage==0), immediately inspect its home planet once."""
+            if getattr(self, "_did_initial_inspect", False):
+                return
+            v = self.vessel
+
+            # Prefer explicit home_planet; else try launchpad_planet_id
+            planet = getattr(v, "home_planet", None)
+            if planet is None:
+                pid = int(getattr(v, "launchpad_planet_id", 0) or 0)
+                if pid and getattr(v, "home_chunk", None):
+                    planet = v.home_chunk.get_object_by_id(pid)
+                # (Optional) last-resort: scan all loaded chunks
+                if planet is None:
+                    try:
+                        from gameobjects import Planet
+                        for ch in getattr(v.shared.chunk_manager, "loaded_chunks", {}).values():
+                            obj = ch.get_object_by_id(pid)
+                            if isinstance(obj, Planet):
+                                planet = obj
+                                break
+                    except Exception:
+                        pass
+
+            # Apply your existing probe rules: only non-moons
+            from gameobjects import Planet
+            if isinstance(planet, Planet) and not bool(getattr(planet, "is_moon", False)):
+                pid = int(getattr(planet, "object_id", 0) or 0)
+                if pid and pid not in v.planets_visited:
+                    v.planets_visited.append(pid)
+                    self._notify_agency_visit(planet)
+
+            self._did_initial_inspect = True
+
     def _visit_threshold_multiplier(self) -> float:
         """4× by default; 6× with FLYBY1; 10× with FLYBY2 (takes precedence)."""
         v = self.vessel

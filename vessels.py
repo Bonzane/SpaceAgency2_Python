@@ -88,9 +88,9 @@ class Vessel(PhysicsObject):
     launchpad_angle_offset: float = 0.0
     home_planet: Any = None  # Reference to the planet where the vessel was launched
     home_chunk: Any = None
-    altitude = 0.0 # Altitude above the home planet's surface
+    altitude: float = 0.0 # Altitude above the home planet's surface
     z_velocity : float = 0.0
-    landed = True
+    landed: bool = True
     landed_angle_offset: float = 0.0
     strongest_gravity_force: float = 0.0
     strongest_gravity_source: Optional[GameObject] = None
@@ -103,7 +103,7 @@ class Vessel(PhysicsObject):
     lifetime_revenue: int = 0
     _lifetime_revenue_carry: float = 0.0   # holds fractional income
     payload: int = 0
-    maximum_operating_tempterature_c: float = 100.0
+    maximum_operating_temperature_c: float = 100.0
     current_temperature_c: float = 20.0
     thermal_resistance: float = 100
     deployment_ready: bool = False
@@ -170,22 +170,7 @@ class Vessel(PhysicsObject):
             self.lifetime_revenue += whole
             self._lifetime_revenue_carry -= whole
         return self.lifetime_revenue
-
-
-    def __getstate__(self):
-        # Copy all fields, then drop runtime-only / non-serializable refs
-        state = self.__dict__.copy()
-
-        # hard runtime links (hold sockets indirectly)
-        state['shared'] = None
-        state['home_chunk'] = None
-
-        # ephemeral / recomputable
-        state['telescope_targets_in_sight'] = []
-        state['strongest_gravity_source'] = None  # will be recomputed by Chunk
-
-        return state
-
+    
     def _payload_base_income(self) -> float:
         try:
             cd = (self.shared.component_data.get(int(self.payload), {}) or {})
@@ -193,13 +178,43 @@ class Vessel(PhysicsObject):
         except Exception:
             return 0.0
 
+
+    def __getstate__(self):
+        state = self.__dict__.copy()
+
+        # runtime links (never pickle)
+        state['shared'] = None
+        state['home_chunk'] = None
+        state['payload_behavior'] = None
+
+        # store only a light reference to planet
+        hp = state.get('home_planet')
+        state['_home_planet_id'] = int(getattr(hp, 'object_id', 0) or 0)
+        state['home_planet'] = None
+
+        # ephemeral / recomputable
+        state['telescope_targets_in_sight'] = []
+        state['strongest_gravity_source'] = None
+        state['mag_push_accum'] = 0.0
+        state['_build_on_land_fired'] = False
+
+        return state
+
+
     def __setstate__(self, state):
         self.__dict__.update(state)
-        # re-init runtime fields to safe defaults; Chunk will reattach them after load
+
+        # re-init runtime fields; chunk will reattach
         self.shared = None
         self.home_chunk = None
-        if self.telescope_targets_in_sight is None:
+        self.payload_behavior = None
+
+        if getattr(self, 'telescope_targets_in_sight', None) is None:
             self.telescope_targets_in_sight = []
+        self.strongest_gravity_source = None
+        self.mag_push_accum = 0.0
+        self.upgrade_tree_push_accum = float(getattr(self, 'upgrade_tree_push_accum', 0.0))
+        self._build_on_land_fired = False
 
     def _build_base_stats(self) -> Dict[str, Any]:
         return {
@@ -449,13 +464,13 @@ class Vessel(PhysicsObject):
         self.power = min(self._attached_power(), self.power_capacity)
         self._apply_stats()
 
-    def can_unlock(self, upgrade_id: str) -> bool:
-        node = UPGRADE_GRAPH.get(upgrade_id)
-        if not node: return False
-        # All requires must be satisfied (either on vessel or agency)
-        agency = self.shared.agencies.get(self.agency_id)
-        have = set(self.unlocked_upgrades) | set(getattr(agency, "unlocked_upgrades", set()) or set())
-        return all(req in have for req in node.requires)
+    def can_unlock(self, upgrade_id: int) -> bool:
+        tree = UPGRADE_TREES_BY_PAYLOAD.get(self.payload, {})
+        node: UpgradeNode = tree.get(upgrade_id)
+        if not node:
+            return False  # upgrade doesn't exist for this payload
+        unlocked = self.unlocked_by_payload.get(self.payload, set())
+        return all(dep in unlocked for dep in node.requires)
 
     def unlock(self, upgrade_id: str) -> bool:
         if not self.can_unlock(upgrade_id): 
@@ -1033,7 +1048,7 @@ class Vessel(PhysicsObject):
         chunkpacket += struct.pack('<f', self.liquid_fuel_capacity_kg)
         chunkpacket += struct.pack('<f', self.power)
         chunkpacket += struct.pack('<f', self.power_capacity)
-        chunkpacket += struct.pack('<f', self.maximum_operating_tempterature_c)
+        chunkpacket += struct.pack('<f', self.maximum_operating_temperature_c)
         chunkpacket += struct.pack('<f', self.current_temperature_c)
         chunkpacket += struct.pack('<f', self.ambient_temp_K)
         chunkpacket += struct.pack('<H', self.stage)
@@ -1788,7 +1803,7 @@ class Vessel(PhysicsObject):
 
 
     def take_temperature_damage(self, dt: float):
-        temperature_difference = self.current_temperature_c - self.maximum_operating_tempterature_c
+        temperature_difference = self.current_temperature_c - self.maximum_operating_temperature_c
         if temperature_difference > 0:
             # Calculate damage based on the temperature difference and time
             damage = temperature_difference * dt * 0.01
