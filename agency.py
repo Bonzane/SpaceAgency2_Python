@@ -35,13 +35,84 @@ class Agency:
     astronauts: Dict[int, Astronaut] = field(default_factory=dict)
     planet_to_astronauts: Dict[int, Set[int]] = field(default_factory=lambda: defaultdict(set))
     _astro_seq: int = 0
+    discovered_planets: Set[int] = field(default_factory=set)
     def __post_init__(self):
         default_building = Building(BuildingType.EARTH_HQ, self.shared, 7, 2, self)
         self.bases_to_buildings[2] = [default_building]
-        self.bases_to_buildings[1] = []
         self.attributes = copy.deepcopy(self.shared.agency_default_attributes)
+        self.discovered_planets.add(EARTH_ID)
+        self.discovered_planets.add(0)
+
+    def discover_planet(self, planet_id: int, notify: bool = True) -> bool:
+        """Mark a planet as discovered for this agency (no base required)
+        and optionally notify the agency."""
+        try:
+            pid = int(planet_id)
+        except Exception:
+            return False
+        if pid <= 0:
+            return False
+
+        # Already discovered? No-op.
+        if hasattr(self, "discovered_planets") and pid in self.discovered_planets:
+            return False
+
+        # Ensure the set exists
+        if not hasattr(self, "discovered_planets") or self.discovered_planets is None:
+            self.discovered_planets = set()
+
+        self.discovered_planets.add(pid)
+
+        if not notify:
+            return True
+
+        # Resolve planet name (best-effort from loaded chunks)
+        name = f"Planet {pid}"
+        try:
+            cm = getattr(self.shared, "chunk_manager", None)
+            if cm is not None:
+                for ch in getattr(cm, "loaded_chunks", {}).values():
+                    try:
+                        obj = ch.get_object_by_id(pid)
+                    except Exception:
+                        obj = None
+                    if obj is not None:
+                        nm = getattr(obj, "name", None)
+                        if nm:
+                            name = str(nm)
+                            break
+        except Exception:
+            pass
+
+        # Send async toast: "Agency discovered <planet name>"
+        try:
+            udp = getattr(self.shared, "udp_server", None)
+            loop = getattr(self.shared, "main_loop", None)
+            if udp and loop and loop.is_running():
+                import asyncio
+                msg = f"Agency discovered {name}."
+                asyncio.run_coroutine_threadsafe(udp.notify_agency(self.id64, 2, msg), loop)
+        except Exception as e:
+            print(f"⚠️ discover_planet notify failed: {e}")
+
+        return True
 
 
+    def has_discovered(self, planet_id: int) -> bool:
+        try:
+            return int(planet_id) in self.discovered_planets
+        except Exception:
+            return False
+
+    def undiscover_planet(self, planet_id: int) -> bool:
+        try:
+            pid = int(planet_id)
+        except Exception:
+            return False
+        if pid in self.discovered_planets:
+            self.discovered_planets.remove(pid)
+            return True
+        return False
 
     # === Membership Methods ===
     def add_player(self, steam_id: int) -> None:
@@ -685,7 +756,8 @@ class Agency:
             "base_inventories": self.base_inventories,
             "base_multipliers": base_mults_diff,
             "astronauts": astronauts_serialized,    
-            "astros_by_planet": astros_by_planet
+            "astros_by_planet": astros_by_planet,
+            "discovered_planets": sorted(int(pid) for pid in self.discovered_planets),
         }
 
         payload = json.dumps(data, separators=(',', ':')).encode('utf-8')

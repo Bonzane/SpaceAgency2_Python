@@ -30,3 +30,6 @@ class Components(IntEnum):
     SPACE_SHUTTLE = 26
     ROVER = 27
     SOLAR_ORBITER = 28
+    STRAP_ON_BOOSTER = 29
+    ION_DRIVE = 30
+    CARGO_HOLD = 31

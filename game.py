@@ -14,6 +14,7 @@ import json
 from utils import _coerce_int_keys
 
 from chunk_manager import ChunkManager
+from gameobjects import GameObject
 
 
 class Game:
@@ -135,6 +136,33 @@ class Game:
         except Exception as e:
             print(f"⚠️ Failed to load meta (players/agencies). Starting fresh. Error: {e}")
 
+
+        GameObject.load_id_seq(self.universe_path)
+
+        # Make sure it's strictly higher than any loaded object's id
+        max_seen = 0
+        for chunk in self.chunk_manager.loaded_chunks.values():
+            objs = getattr(chunk, "objects", None)
+            if isinstance(objs, dict):
+                iterable = objs.values()
+            else:
+                iterable = objs or []
+            for obj in iterable:
+                try:
+                    oid = int(getattr(obj, "object_id", 0))
+                except Exception:
+                    oid = 0
+                if oid > max_seen:
+                    max_seen = oid
+
+        if max_seen + 1 > GameObject._next_id:
+            GameObject.set_next_id(max_seen + 1)
+
+        # Persist (keeps file correct even if we only bumped from scan)
+        GameObject.save_id_seq(self.universe_path)
+        print(f"🔢 Next object id = {GameObject._next_id}")
+
+        
     # ====== META FUNCTIONS ====
     def _atomic_write(self, path: pathlib.Path, data_bytes: bytes):
         tmp = path.with_suffix(path.suffix + ".tmp")
@@ -189,6 +217,8 @@ class Game:
                     "base_capacities": agency.base_inventory_capacities,
                     "vessels": [v.get_id() for v in agency.get_all_vessels()] if hasattr(agency, "get_all_vessels") else [],
                     "bases_to_buildings": bases,
+                    "discovered_planets": sorted(int(pid) for pid in getattr(agency, "discovered_planets", set())),
+
                 })
 
             self._atomic_write(agencies_path, json.dumps(agencies_payload, separators=(',',':')).encode('utf-8'))
@@ -249,10 +279,16 @@ class Game:
                     agency.secondarycolor = int(a.get("secondarycolor", 0))
                     agency.income_per_second = int(a.get("income_per_second", 0))
                     raw_inv = a.get("base_inventories", {}) or {}
+                    raw_disc = a.get("discovered_planets", []) or []
+                    try:
+                        agency.discovered_planets = set(int(pid) for pid in raw_disc)
+                    except Exception:
+                        agency.discovered_planets = set()
                     agency.base_inventories = {
                         int(pid): {int(rid): int(qty) for rid, qty in inv.items()}
                         for pid, inv in raw_inv.items()
                     }
+                    agency.discovered_planets.add(2)
 
                     raw_caps = a.get("base_capacities", {}) or {}
                     agency.base_inventory_capacities = {int(pid): int(cap) for pid, cap in raw_caps.items()}
@@ -417,7 +453,7 @@ class Game:
         os.replace(tmp, chunk_path)
 
         print(f"✅ Created Home Chunk at {chunk_path}")
-
+        GameObject.save_id_seq(self.universe_path)
 
     def create_milkyway_starmap(self):
         chunk_path = (self.universe_path / "galaxies" / "1" / "interstellarMap.sa2map").resolve()

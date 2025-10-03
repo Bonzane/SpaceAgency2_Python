@@ -46,6 +46,10 @@ class DataGramPacketType(IntEnum):
     UNBOARD_ASTRONAUT = 0x0E
     CHANGE_ASTRONAUT_SUIT = 0x0F
     MAGNETOMETER_FIELD = 0x10
+    GET_JETTISON = 0x11
+    CARGO_ADD = 0x12
+    CARGO_REMOVE = 0x13
+    CARGO_STATE = 0x14
 
 
 class ChatMessage(IntEnum):

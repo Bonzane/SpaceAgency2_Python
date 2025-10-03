@@ -31,9 +31,33 @@ class Astronaut:
     planet_id: Optional[int] = None
     vessel_id: Optional[int] = None
 
+    level: int = 1
+    exp: float = 0.0
+
     def __post_init__(self):
         self.suit_id = max(0, int(self.suit_id))
         self.appearance_id =_rand_appearance()
+
+    def exp_to_next(self) -> float:
+        # Simple curve: 100 * current_level
+        return 100.0 * max(1, int(self.level))
+
+    def gain_exp(self, amount: float) -> int:
+        """
+        Add XP (can be fractional). Returns number of levels gained this call.
+        """
+        if amount <= 0:
+            return 0
+        self.exp += float(amount)
+        leveled = 0
+        # loop in case we pass multiple thresholds
+        while self.exp >= self.exp_to_next():
+            need = self.exp_to_next()
+            self.exp -= need
+            self.level += 1
+            leveled += 1
+        return leveled
+
 
     # --- Serialization helpers (optional) ---
     def to_json(self) -> Dict[str, Any]:
@@ -45,6 +69,8 @@ class Astronaut:
             "agency_id": int(self.agency_id),
             "planet_id": int(self.planet_id) if self.planet_id is not None else None,
             "vessel_id": int(self.vessel_id) if self.vessel_id is not None else None,
+            "level": int(self.level),
+            "exp": float(self.exp),
         }
 
     @classmethod

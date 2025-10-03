@@ -23,7 +23,7 @@
                 "buildinglevel_unlocks" : {
                     "1" : {
                         "unlock_buildings" : [1, 2],
-                        "unlock_components" : [1, 2, 3, 4, 6]
+                        "unlock_components" : [1, 2, 3, 4, 6, 5]
                     }, 
                     "2" : {
                         "unlock_buildings" : [3, 4, 5],
@@ -35,11 +35,11 @@
                     },
                     "4" : {
                         "add_base_income" : 300,
-                        "unlock_components" : [14, 15, 16, 24]
+                        "unlock_components" : [14, 15, 16, 24, 31]
                     },
                     "5" : {
                         "add_base_income" : 300,
-                        "unlock_components" : [17, 18, 19, 20, 21, 22]
+                        "unlock_components" : [17, 18, 19, 20, 21, 22, 29]
                     },
                     "6" : {
                         "add_base_income" : 300,
@@ -50,7 +50,7 @@
                         "unlock_components" : [23]
                     },
                     "8" : {
-                        "unlock_components" : [27]
+                        "unlock_components" : [27, 30]
                     },
                     "9" : {
                         "unlock_components" : [26]
@@ -226,7 +226,7 @@
                 "base_income" : 300,
                 "buildinglevel_unlocks" : {
                     "1" : {
-                        "unlock_buildings" : [10]
+                        "unlock_buildings" : [10, 12]
                     }
                 }
             }
@@ -243,7 +243,20 @@
             "attributes" : {
                 "add_base_income" : 500
             }
-        }                         
+        },
+        {
+            "id" : 12,
+            "name" : "Refueling Station", 
+            "cost" : 10000000, 
+            "build_time" : 60,
+            "upgrade_costs" : {},
+            "description" : "Automatically refuels vessels on the same planet.",
+            "resource_cost" : {
+            },
+            "attributes" : {
+                "base_refueling" : 10
+            }
+        }                                
 
 
     ],
@@ -349,7 +362,8 @@
     "planet_to_buildings"   :
     {
         "Earth" : [1, 2, 3, 4, 5, 6, 9, 7, 8],
-        "Luna" : [10]      
+        "Luna" : [10, 12, 4],
+        "Mars" : [4]      
     }, 
 
     "agency_default_attributes" : {
@@ -472,6 +486,12 @@
                     "y" : -128,
                     "snaps_accepted" : ["fuel-give"],
                     "snaps_provided" : ["fuel-receive"]
+                },
+                {
+                    "x" : 0,
+                    "y" : 10,
+                    "snaps_accepted" : ["coupler-give"],
+                    "snaps_provided" : ["coupler-receive"]
                 }
             ]
         }, 
@@ -489,7 +509,7 @@
                 "forward-fire-output-point" : [0, 128], 
                 "forward-ignition-sound" : 1, 
                 "forward-thrust-sound" : 1,
-                "forward-fire-appearance" : 1,
+                "forward-fire-appearance" : 6,
                 "forward-fire-heat" : 0.1,
                 "reverse-fire-output-point" : [0, 128], 
                 "reverse-ignition-sound" : 1, 
@@ -503,6 +523,12 @@
                     "y" : -128,
                     "snaps_accepted" : ["fuel-give"],
                     "snaps_provided" : ["fuel-receive"]
+                },
+                {
+                    "x" : 0,
+                    "y" : 10,
+                    "snaps_accepted" : ["coupler-give"],
+                    "snaps_provided" : ["coupler-receive"]
                 }
             ]
         }, 
@@ -527,6 +553,12 @@
                     "y" : -128,
                     "snaps_accepted" : ["fuel-give"],
                     "snaps_provided" : ["fuel-receive"]
+                },
+                {
+                    "x" : 0,
+                    "y" : 10,
+                    "snaps_accepted" : ["coupler-give"],
+                    "snaps_provided" : ["coupler-receive"]
                 }
             ]
         } , 
@@ -551,6 +583,12 @@
                     "y" : -128,
                     "snaps_accepted" : ["fuel-give"],
                     "snaps_provided" : ["fuel-receive"]
+                },
+                {
+                    "x" : 0,
+                    "y" : 10,
+                    "snaps_accepted" : ["coupler-give"],
+                    "snaps_provided" : ["coupler-receive"]
                 }
             ]
         }, 
@@ -634,6 +672,12 @@
                     "y" : -128,
                     "snaps_accepted" : ["fuel-give"],
                     "snaps_provided" : ["fuel-receive"]
+                },
+                {
+                    "x" : 0,
+                    "y" : 10,
+                    "snaps_accepted" : ["coupler-give"],
+                    "snaps_provided" : ["coupler-receive"]
                 }
             ]
         } , 
@@ -862,8 +906,8 @@
                 {
                     "x" : 0,
                     "y" : -32,
-                    "snaps_accepted" : ["fuel-give"], 
-                    "snaps_provided" : ["fuel-receive"]
+                    "snaps_accepted" : ["fuel-give", "coupler-receive"], 
+                    "snaps_provided" : ["fuel-receive", "coupler-give"]
                 }, 
                 {
                     "x" : 0,
@@ -881,17 +925,18 @@
             "cost" : 10000,
             "mass" : 40,
             "attributes" : {
-                "stage-add" : 1
+                "stage-add" : 1,
+                "render-layer" : 0
             },
             "snap_points" : [
                 {
-                    "x" : 18,
+                    "x" : 14,
                     "y" : 0,
                     "snaps_accepted" : ["attachment-left-receive", "attachment-right-give"],
                     "snaps_provided" : ["attachment-left-give", "attachment-right-receive"]
                 },
                 {
-                    "x" : -18,
+                    "x" : -14,
                     "y" : 0,
                     "snaps_accepted" : ["attachment-right-receive", "attachment-left-give"],
                     "snaps_provided" : ["attachment-right-give", "attachment-left-receive"]
@@ -953,7 +998,8 @@
             },
             "mass" : 30,
             "attributes" : {
-                "power-capacity" : 5000
+                "power-capacity" : 5000,
+                "render-layer" : 2
             },
             "snap_points" : [
                 {
@@ -992,7 +1038,8 @@
             },
             "mass" : 50,
             "attributes" : {
-                "solar-power" : 10
+                "solar-power" : 10,
+                "render-layer" : 2
             },
             "snap_points" : [
                 {
@@ -1066,6 +1113,7 @@
             "attributes" : {
                 "is-payload" : 1,
                 "seats" : 2,
+                "training-xp-rate" : 0.1,
                 "liquid-fuel" : 350,
                 "forward-thrust" : 5,
                 "forward-fuel-consumption" : 3,
@@ -1099,7 +1147,8 @@
                 "reverse-ignition-sound" : 1,
                 "reverse-thrust-sound" : 1,
                 "reverse-fire-heat" : 2,
-                "build-on-land" : ["Luna", 10]
+                "build-on-land" : ["Luna", 10],
+                "cargo-capacity" : 10
 
             }, 
             "snap_points" : [
@@ -1118,10 +1167,10 @@
             "name" : "Space Shuttle", 
             "cost" : 5000000,
             "resource_cost" : {
-                "1" : 100,
-                "2" : 5,
-                "4" : 10,
-                "21" : 10
+                "1" : 75,
+                "2" : 4,
+                "4" : 6,
+                "21" : 6
             },
             "mass" : 1000,
             "attributes" : {
@@ -1130,19 +1179,19 @@
                 "seats" : 4,
                 "draw-anyways" : 1,
                 "liquid-fuel" : 1600,
-                "forward-thrust" : 6,
+                "forward-thrust" : 10,
                 "forward-fuel-consumption" : 2,
                 "forward-fire-output-point" : [0, 400],
                 "forward-fire-appearance" : 1,
                 "forward-ignition-sound" : 1,
                 "forward-thrust-sound" : 1,
-                "ccw-thrust" : 10,
+                "ccw-thrust" : 20,
                 "ccw-fuel-consumption" : 2,
                 "ccw-fire-output-point" : [-50, 400],
                 "ccw-fire-appearance" : 4,
                 "ccw-ignition-sound" : 1,
                 "ccw-thrust-sound" : 1,
-                "ccw-thrust-direction" : 0, 
+                "ccw-thrust-direction" : -30, 
                 "ccw-fire-angle-offset" : 0, 
                 "cw-thrust" : 20,
                 "cw-fuel-consumption" : 2,
@@ -1150,18 +1199,19 @@
                 "cw-fire-appearance" : 4,
                 "cw-ignition-sound" : 1,
                 "cw-thrust-sound" : 1,
-                "cw-thrust-direction" : 0, 
+                "cw-thrust-direction" : 30, 
                 "cw-fire-angle-offset" : 0,
                 "forward-fire-heat" : 2,
                 "ccw-fire-heat" : 2,
                 "cw-fire-heat" : 2,
-                "reverse-thrust" : 6,
+                "reverse-thrust" : 8,
                 "reverse-fuel-consumption" : 3,
                 "reverse-fire-output-point" : [0, 400],
                 "reverse-fire-appearance" : 3,
                 "reverse-ignition-sound" : 1,
                 "reverse-thrust-sound" : 1,
-                "reverse-fire-heat" : 2
+                "reverse-fire-heat" : 2,
+                "render-layer" : 2
 
             }, 
             "snap_points" : [
@@ -1182,7 +1232,8 @@
             "mass" : 150,
             "attributes" : {
                 "is-payload" : 1,
-                "deploy-landed" : 1
+                "deploy-landed" : 1,
+                "cargo-capacity" : 30
             }, 
             "snap_points" : [
                 {
@@ -1236,7 +1287,8 @@
                 "thermal-regulation" : 4,
                 "thermal-regulation-power-draw" : 3,
                 "solar-power" : 8,
-                "power-capacity" : 2500
+                "power-capacity" : 2500,
+                "render-layer" : 2
 
             }, 
             "snap_points" : [
@@ -1248,7 +1300,117 @@
                 }
             ]
 
-        }                                                                                        
+        }, 
+        {
+            "id" : 29,
+            "category" : "engine",
+            "name" : "Strap-On Booster", 
+            "cost" : 50000,
+            "mass" : 450,
+            "attributes" : {
+                "forward-thrust" : 100, 
+                "forward-fuel-consumption" : 20, 
+                "forward-fire-output-point" : [0, 298], 
+                "forward-ignition-sound" : 1, 
+                "forward-thrust-sound" : 1,
+                "forward-fire-appearance" : 1, 
+                "forward-fire-heat" : 2.0,
+                "liquid-fuel" : 500,
+                "render-layer" : 0
+            },
+            "snap_points" : [
+                {
+                    "x" : -48,
+                    "y" : -65,
+                    "snaps_accepted" : ["attachment-right-receive"],
+                    "snaps_provided" : ["attachment-right-give"]
+                },
+                {
+                    "x" : 48,
+                    "y" : -65,
+                    "snaps_accepted" : ["attachment-left-receive"],
+                    "snaps_provided" : ["attachment-left-give"]
+                }
+            ]
+        }, 
+        {
+            "id" : 30,
+            "category" : "engine",
+            "name" : "Ion Drive", 
+            "cost" : 100000,
+            "resource_cost" : {
+                "13" : 1
+            },
+            "mass" : 150,
+            "attributes" : {
+                "ion-drive" : 5,
+                "ion-drive-power-draw" : 1,
+                "ion-drive-output-point" : [0, 118], 
+                "ion-thrust-sound" : 1,
+                "ion-drive-appearance" : 5
+            },
+            "snap_points" : [
+                {
+                    "x" : 0,
+                    "y" : -128,
+                    "snaps_accepted" : ["fuel-give"],
+                    "snaps_provided" : ["fuel-receive"]
+                }
+            ]
+        }, 
+        {
+            "id" : 31,
+            "category" : "hull",
+            "name" : "Cargo Hold", 
+            "cost" : 100000,
+            "mass" : 450,
+            "attributes" : {
+                "cargo-capacity" : 100,
+                "liquid-fuel" : 900
+            },
+            "snap_points" : [
+                
+                {
+                    "x" : 0,
+                    "y" : 0,
+                    "snaps_accepted" : ["attachment-center-give"],
+                    "snaps_provided" : ["attachment-center-receive"]
+                },
+                {
+                    "x" : 0,
+                    "y" : 264,
+                    "snaps_accepted" : ["fuel-receive"],
+                    "snaps_provided" : ["fuel-give"]
+                },
+                {
+                    "x" : -64,
+                    "y" : 0,
+                    "snaps_accepted" : ["attachment-left-give"],
+                    "snaps_provided" : ["attachment-left-receive"]
+                },
+                {
+                    "x" : 64,
+                    "y" : 0,
+                    "snaps_accepted" : ["attachment-right-give"],
+                    "snaps_provided" : ["attachment-right-receive"]
+                },
+                {
+                    "x" : -64,
+                    "y" : 100,
+                    "snaps_accepted" : ["attachment-left-give"],
+                    "snaps_provided" : ["attachment-left-receive"]
+                },
+                {
+                    "x" : 64,
+                    "y" : 100,
+                    "snaps_accepted" : ["attachment-right-give"],
+                    "snaps_provided" : ["attachment-right-receive"]
+                }
+                
+            ]
+        }                                                                                            
     ]
         
 }
+
+

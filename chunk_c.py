@@ -50,9 +50,11 @@ class Chunk:
         return self.ready
 
     def add_object(self, obj: GameObject):
+        oid = int(getattr(obj, "object_id"))
+        obj.object_id = oid  # normalize on the instance
         self.objects.append(obj)
-        self.id_to_object[obj.object_id] = obj
-        self.manager.register_object(obj.object_id, self.galaxy, self.system)
+        self.id_to_object[oid] = obj
+        self.manager.register_object(oid, self.galaxy, self.system)
 
         if isinstance(obj, Vessel):
             obj.shared = self.manager.shared
@@ -116,9 +118,16 @@ class Chunk:
                 ObjectType.NEPTUNE,
             )
 
+        def is_jettisoned(o):
+            return getattr(o, "object_type", None) == ObjectType.JETTISONED_COMPONENT
+
+
         asteroid_idx = [i for i, o in enumerate(physics_objects) if is_asteroid(o)]
         massive_idx = [i for i, o in enumerate(physics_objects) if is_massive(o)]
         non_ast_idx = [i for i in range(n) if i not in asteroid_idx]
+        jett_idx   = [i for i, o in enumerate(physics_objects) if is_jettisoned(o)]
+        active_idx = [i for i in non_ast_idx if i not in jett_idx]  # sources & mutual targets
+
 
         # numpy (or cupy) views
         pos_np = np.array([obj.position for obj in physics_objects], dtype=np.float64)
@@ -129,13 +138,13 @@ class Chunk:
         vel = xp.asarray(vel_np)
         mass = xp.asarray(mass_np)
 
-        # 1) pairwise forces (non-asteroids)
-        if len(non_ast_idx) > 1:
-            forces = np.zeros((len(non_ast_idx), 2), dtype=np.float64)
+        # 1) pairwise forces (active bodies only; jettisoned are passive)
+        if len(active_idx) > 1:
+            forces_active = np.zeros((len(active_idx), 2), dtype=np.float64)
             vessel_max_pull = {}
 
-            for ii, i in enumerate(non_ast_idx):
-                for jj, j in enumerate(non_ast_idx):
+            for ii, i in enumerate(active_idx):
+                for jj, j in enumerate(active_idx):
                     if j <= i:
                         continue
 
@@ -166,9 +175,9 @@ class Chunk:
                     force_vec = force_mag * direction
 
                     if raw_dist >= max(radius_i, radius_j) * 1.15:
-                        forces[ii] += force_vec
-                        kk = non_ast_idx.index(j)
-                        forces[kk] -= force_vec
+                        forces_active[ii] += force_vec
+                        kk = active_idx.index(j)
+                        forces_active[kk] -= force_vec
 
                     if isinstance(obj_i, Vessel):
                         if obj_i.object_id not in vessel_max_pull or force_mag > vessel_max_pull[obj_i.object_id][1]:
@@ -184,11 +193,54 @@ class Chunk:
                     vessel.strongest_gravity_force = strength
 
             MAX_ACCEL = 1e3
-            for idx_local, i in enumerate(non_ast_idx):
+            for idx_local, i in enumerate(active_idx):
                 obj = physics_objects[i]
                 if obj.mass <= 0:
                     continue
-                fx, fy = forces[idx_local]
+                fx, fy = forces_active[idx_local]
+                ax, ay = fx / mass_np[i], fy / mass_np[i]
+                acc_mag = math.hypot(ax, ay)
+                if acc_mag > MAX_ACCEL:
+                    scale = MAX_ACCEL / acc_mag
+                    ax *= scale
+                    ay *= scale
+                obj.do_update(dt, (ax, ay))
+
+        # 1b) forces on passive jettisoned parts (they feel gravity but don't pull)
+        if jett_idx and active_idx:
+            forces_jett = np.zeros((len(jett_idx), 2), dtype=np.float64)
+
+            for ii, i in enumerate(jett_idx):
+                obj_i = physics_objects[i]
+                for j in active_idx:
+                    obj_j = physics_objects[j]
+
+                    diff = pos_np[j] - pos_np[i]
+                    raw_dist = float(np.hypot(diff[0], diff[1]))
+
+                    radius_i = getattr(obj_i, "radius_km", 0.0)
+                    radius_j = getattr(obj_j, "radius_km", 0.0)
+                    softening_km = 0.8 * max(radius_i, radius_j)
+                    sep_from_surfaces = max(0.0, raw_dist - (radius_i + radius_j))
+                    effective_sep = sep_from_surfaces + softening_km
+
+                    if raw_dist > 0:
+                        direction = diff / raw_dist
+                    else:
+                        direction = np.zeros(2, dtype=np.float64)
+
+                    force_mag = G * mass_np[i] * mass_np[j] / (effective_sep ** 2)
+                    force_vec = force_mag * direction
+
+                    if raw_dist >= max(radius_i, radius_j) * 1.15:
+                        forces_jett[ii] += force_vec  # one-way: only onto jettisoned
+
+            MAX_ACCEL = 1e3
+            for idx_local, i in enumerate(jett_idx):
+                obj = physics_objects[i]
+                if obj.mass <= 0:
+                    continue
+                fx, fy = forces_jett[idx_local]
                 ax, ay = fx / mass_np[i], fy / mass_np[i]
                 acc_mag = math.hypot(ax, ay)
                 if acc_mag > MAX_ACCEL:
@@ -289,6 +341,14 @@ class Chunk:
                 if session and session.udp_port and session.alive:
                     addr = (session.remote_ip, session.udp_port)
                     self.manager.shared.udp_server.transport.sendto(chunkpacket, addr)
+
+        to_remove = []
+        for obj in list(self.objects):
+            if getattr(obj, "object_type", None) == ObjectType.JETTISONED_COMPONENT and getattr(obj, "expired", False):
+                to_remove.append(obj)
+
+        for obj in to_remove:
+            self.remove_object(obj)
 
     def serialize_chunk(self):
         print(f"💾 Serializing chunk {self.galaxy}:{self.system} with {len(self.objects)} objects")

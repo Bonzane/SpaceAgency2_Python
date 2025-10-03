@@ -3,7 +3,7 @@ from dataclasses import dataclass, field
 import struct
 from typing import List, Dict, Tuple, Any, Union, Optional, Set
 from physics import C_KM_S, G, AU_KM
-from gameobjects import PhysicsObject, GameObject, ObjectType
+from gameobjects import PhysicsObject, GameObject, ObjectType, JettisonedComponent
 from enum import Enum, IntEnum
 import math
 from packet_types import DataGramPacketType
@@ -38,6 +38,7 @@ class Systems(IntEnum):
     UNDEFINED = 0
     THERMAL_REGULATOR = 1
     MAGNETOMETER = 2
+    ION_DRIVE = 3
 
 @dataclass
 class AttachedVesselComponent:
@@ -110,6 +111,8 @@ class Vessel(PhysicsObject):
     unland_grace_time_s: float = 0.0
     seats_capacity: int = 0
     astronauts_onboard: List[int] = field(default_factory=list)
+    cargo_capacity: int = 0
+    cargo: Dict[int, int] = field(default_factory=dict)
 
     #---Telescopes---
     telescope_rcs_angle: float = 0.0
@@ -119,6 +122,9 @@ class Vessel(PhysicsObject):
 
     #---Probes---
     planets_visited: List[int] = field(default_factory=list)
+
+    #---Landers---
+    last_landed_body_id: Optional[int] = None
 
 
     fuel_by_stage: Dict[int, float] = field(default_factory=dict, repr=False)
@@ -153,10 +159,13 @@ class Vessel(PhysicsObject):
             return float(default)
 
     def _ensure_payload_behavior(self):
-        # Rebuild if missing or for the wrong payload id
+        if not self.has_payload:
+            self.payload_behavior = None
+            return
         if (self.payload_behavior is None or
             getattr(self.payload_behavior, "payload_id", None) != int(self.payload)):
             self.payload_behavior = make_payload_behavior(self)
+
 
     def credit_income(self, amount: float) -> int:
         """Accumulate income; store whole units in lifetime_revenue, keep the rest in a carry bucket."""
@@ -232,6 +241,134 @@ class Vessel(PhysicsObject):
             "income":   {"base": self._payload_base_income()},   # <<— was 0.0
         }
 
+    def _component_world_position(self, comp_xy: Tuple[float, float]) -> Tuple[float, float]:
+        """
+        Convert a component's local (x,y) into world (x,y), honoring vessel rotation and CoM.
+        Assumes component coordinates are already in physics space (Y-up).
+        NOTE: self.rotation is stored in screen/CW degrees, so negate it to get math/CCW.
+        """
+        cx, cy = comp_xy
+        comx, comy = self.center_of_mass
+        dx = cx - comx
+        dy = cy - comy
+
+        # Convert stored CW degrees to CCW radians for standard rotation matrix
+        rot = math.radians(-self.rotation + 90)
+        cos_t = math.cos(rot)
+        sin_t = math.sin(rot)
+
+        # rotate relative vector, then translate by vessel world position
+        rx = dx * cos_t - dy * sin_t
+        ry = dx * sin_t + dy * cos_t
+
+        vx, vy = self.position
+        return (vx + rx, vy + ry)
+
+
+    def _resolve_chunk(self):
+        """
+        Prefer the chunk manager's id→chunk map (authoritative), fall back to home_chunk.
+        """
+        cm = getattr(self.shared, "chunk_manager", None)
+        if cm and hasattr(cm, "get_chunk_from_object_id"):
+            ch = cm.get_chunk_from_object_id(int(self.object_id))
+            if ch is not None:
+                return ch
+        return getattr(self, "home_chunk", None)
+
+
+    def _spawn_jettisoned_component(self, comp: AttachedVesselComponent, comp_index: int):
+        chunk = self._resolve_chunk()
+        if chunk is None:
+            print(f"⚠️ spawn_jettisoned_component: no chunk for vessel id={int(self.object_id)}; aborting spawn.")
+            return
+
+        # --- read defs
+        cd    = (self.shared.component_data.get(int(comp.id), {}) or {})
+        attrs = (cd.get("attributes", {}) or {})
+        mass_kg   = float(cd.get("mass", 1.0))
+        radius_km = float(attrs.get("radius-km", 0.2))  # ~200m default
+
+        # --- world placement
+        world_pos = self._component_world_position((float(comp.x), float(comp.y)))
+
+        # small outward push from vessel center toward component
+        vx, vy = self.velocity
+        dirx = world_pos[0] - self.position[0]
+        diry = world_pos[1] - self.position[1]
+        d = math.hypot(dirx, diry)
+        if d > 0.0:
+            ux, uy = (dirx / d, diry / d)
+        else:
+            ang = math.radians(self.rotation - 90.0)  # forward
+            ux, uy = math.cos(ang), math.sin(ang)
+
+        PUSH_KM_S = 0.1
+        j_vel = (vx + ux * PUSH_KM_S, vy + uy * PUSH_KM_S)
+
+        # --- build the physics object
+        jc = JettisonedComponent(
+            position=world_pos,
+            velocity=j_vel,
+            mass=mass_kg,
+            radius_km=radius_km,
+            component_index=int(comp_index),
+        )
+        jc.rotation = float(self.rotation)
+        jc.component_id = int(getattr(comp, "id", 0))
+
+
+        # allow longer lifetime during debugging
+        try:
+            dbg_life = float(getattr(self.shared, "jettison_lifetime_s", 0.0))
+            if dbg_life > 0.0:
+                jc.lifetime = dbg_life
+        except Exception:
+            pass
+
+        # normalize id type before registration to avoid lookup mismatches
+        jc.object_id = int(jc.object_id)
+
+        # --- pre-add log
+        print(
+            f"🧩 JC SPAWN "
+            f"vessel={int(self.object_id)} comp_index={int(comp_index)} "
+            f"oid={int(jc.object_id)} pos=({world_pos[0]:.3f},{world_pos[1]:.3f}) "
+            f"vel=({j_vel[0]:.6f},{j_vel[1]:.6f}) mass={mass_kg:.3f}kg r={radius_km:.3f}km "
+            f"life={getattr(jc,'lifetime',0.0):.2f}s "
+            f"chunk={(chunk.galaxy, chunk.system)}"
+        )
+
+        # --- register in chunk
+        try:
+            chunk.add_object(jc)
+        except Exception as e:
+            print(f"❌ JC ADD FAILED oid={int(jc.object_id)} chunk={(chunk.galaxy, chunk.system)}: {e}")
+            return
+
+        # --- verify registration/mapping
+        in_chunk = chunk.get_object_by_id(int(jc.object_id)) is not None
+        mapped = None
+        try:
+            cm = getattr(chunk, "manager", None)
+            if cm is not None:
+                mapped = cm.object_id_to_chunk.get(int(jc.object_id))
+        except Exception:
+            pass
+
+        if in_chunk:
+            print(
+                f"✅ JC REGISTERED oid={int(jc.object_id)} "
+                f"in_chunk={in_chunk} map={mapped} "
+                f"(objects_now={len(getattr(chunk,'objects',[]))})"
+            )
+        else:
+            print(
+                f"⚠️ JC NOT FOUND AFTER ADD oid={int(jc.object_id)} "
+                f"chunk={(chunk.galaxy, chunk.system)} map={mapped}"
+            )
+
+
 
     def _collect_active_modifiers(self) -> list:
         """Only modifiers for *this* payload and only when stage==0."""
@@ -270,6 +407,8 @@ class Vessel(PhysicsObject):
 
 
     def _build_upgrades_dgram(self) -> bytes:
+        if not self.has_payload or self.stage != 0:
+            return None
         # 1) already-unlocked (as ints)
         unlocked = sorted(int(u) for u in self.current_payload_unlocked())
 
@@ -302,6 +441,8 @@ class Vessel(PhysicsObject):
 
     def _broadcast_upgrade_tree_to_agency(self):
         pkt = self._build_upgrades_dgram()
+        if not pkt:
+            return
         udp = getattr(self.shared, "udp_server", None)
         if udp and getattr(udp, "transport", None):
             udp.send_udp_to_agency(int(self.agency_id), pkt)
@@ -309,6 +450,8 @@ class Vessel(PhysicsObject):
 
     # --- helpers ---
     def _send_upgrade_tree_to_player(self, player_id: int) -> int:
+        if not self.has_payload or self.stage != 0 or not player_id:
+            return 0
         """Send the current upgrade tree UDP packet to a single player (by id)."""
         if not player_id:
             return 0
@@ -331,19 +474,57 @@ class Vessel(PhysicsObject):
         return 1
 
     def _tick_upgrade_tree_push(self, real_dt: float):
-        """
-        While controlled, push the upgrades packet to the controller every ~1s (real time).
-        real_dt must be wall/real seconds (dt / gamespeed).
-        """
-        if not int(getattr(self, "controlled_by", 0)):
+        if not self.has_payload or not int(getattr(self, "controlled_by", 0)):
             self.upgrade_tree_push_accum = 0.0
             return
-
         self.upgrade_tree_push_accum += max(0.0, float(real_dt))
         if self.upgrade_tree_push_accum >= 1.0:
             self._send_upgrade_tree_to_player(int(self.controlled_by))
             self.upgrade_tree_push_accum = 0.0
 
+
+    def apply_ion_drive(self, dt: float):
+        """
+        Continuous, control-agnostic forward thrust when the ion drive is active and powered.
+        Thrust (kN) = systems[ION_DRIVE].amount * (power actually used / power requested).
+        Draws power each tick; scales thrust down if there isn't enough power.
+        """
+        sys = self.systems.get(Systems.ION_DRIVE)
+        if not sys or not sys.active or sys.amount <= 1e-9:
+            return
+        if self.power_capacity <= 0.0:
+            return
+
+        # How much power the drive wants this tick
+        draw_per_sec = max(0.0, float(getattr(sys, "power_draw", 0.0) * 0.001))
+        need = draw_per_sec * max(0.0, float(dt))
+        self.rotation_velocity = self.rotation_velocity * 0.995
+        # If there's no power budget, bail early
+        if need <= 0.0:
+            return
+
+        # Try to pay for it; throttle thrust by the fraction we could afford
+        before = self.power
+        _ = self._draw_power(need)
+        used = max(0.0, before - self.power)
+        if used <= 0.0:
+            return
+
+        throttle = min(1.0, used / need)
+
+        # Convert "amount" into forward thrust (kN), scaled by available power and global multiplier
+        base_kN = float(sys.amount) * throttle
+        mult = float(getattr(self.shared, "global_thrust_multiplier", 1.0))
+        kN = base_kN * mult
+        if kN <= 0.0:
+            return
+
+        # Apply pure forward thrust through the center of mass (no torque)
+        local_point = self.center_of_mass  # acts like a force through CoM
+        self.apply_thrust_at(local_point, direction_angle_deg=-90, thrust_kN=kN, dt=dt)
+
+        # Feed altitude/lift model that keys off forward thrust
+        self.last_forward_thrust_kN += kN
 
 
     def calculate_vessel_stats(self):
@@ -368,6 +549,9 @@ class Vessel(PhysicsObject):
         # reset thermal resistance
         base_tau = 100.0             
         attached_tau_bonus = 0.0 
+
+        #cargo
+        self.cargo_capacity = 0
 
 
         # if stage not yet set, infer from components
@@ -422,11 +606,17 @@ class Vessel(PhysicsObject):
                     float(attrs.get("magnetometer-power-draw", 0.0)),
                     False
                 )
-
+                self.add_system(
+                    Systems.ION_DRIVE,
+                    float(attrs.get("ion-drive", 0.0)),
+                    float(attrs.get("ion-drive-power-draw", 0.0)),
+                    False
+                )
                 attached_tau_bonus += float(attrs.get("thermal-resistance", 0.0))
                 self.solar_power += float(attrs.get("solar-power", 0.0))
                 self.nuclear_power += float(attrs.get("nuclear-power", 0.0)) * 0.1
                 self.armor += float(attrs.get("armor", 0.0))
+                self.cargo_capacity += int(attrs.get("cargo-capacity", 0) or 0)
 
         # set thermal resistance based on attached components
         self.thermal_resistance = max(1e-3, base_tau + attached_tau_bonus)
@@ -463,6 +653,158 @@ class Vessel(PhysicsObject):
         self.power_capacity = self._attached_power_capacity()
         self.power = min(self._attached_power(), self.power_capacity)
         self._apply_stats()
+
+    # ----------------------
+    # Cargo helpers
+    # ----------------------
+    def cargo_total(self) -> int:
+        """Total units of all resources currently onboard."""
+        return sum(int(max(0, v)) for v in (self.cargo or {}).values())
+
+    def cargo_free(self) -> int:
+        """Free capacity left (never negative)."""
+        cap = int(max(0, self.cargo_capacity))
+        return max(0, cap - self.cargo_total())
+
+    def get_cargo(self, resource_id: int) -> int:
+        """How many units of a specific resource onboard."""
+        try:
+            rid = int(resource_id)
+        except Exception:
+            return 0
+        return int(self.cargo.get(rid, 0))
+
+    def add_cargo(self, resource_id: int, amount: int) -> int:
+        """
+        Try to add `amount` units of `resource_id`.
+        Returns how many were actually added (clamped by free capacity).
+        """
+        try:
+            rid = int(resource_id)
+            amt = int(amount)
+        except Exception:
+            return 0
+        if amt <= 0:
+            return 0
+
+        put = min(amt, self.cargo_free())
+        if put <= 0:
+            return 0
+
+        self.cargo[rid] = int(self.cargo.get(rid, 0)) + put
+        return put
+
+    def remove_cargo(self, resource_id: int, amount: int) -> int:
+        """
+        Remove up to `amount` units of `resource_id`.
+        Returns how many were actually removed.
+        """
+        try:
+            rid = int(resource_id)
+            amt = int(amount)
+        except Exception:
+            return 0
+        if amt <= 0:
+            return 0
+
+        have = int(self.cargo.get(rid, 0))
+        take = min(amt, have)
+        if take <= 0:
+            return 0
+
+        newv = have - take
+        if newv > 0:
+            self.cargo[rid] = newv
+        else:
+            # keep dict tidy
+            if rid in self.cargo:
+                del self.cargo[rid]
+        return take
+
+    def try_add_cargo_bundle(self, bundle: Dict[int, int]) -> Dict[int, int]:
+        """
+        Add a set of resources {rid: amount}. Returns a dict of leftovers that
+        did not fit (empty dict means all added).
+        """
+        leftovers: Dict[int, int] = {}
+        # Normalize keys to int, values to int
+        for k, v in (bundle or {}).items():
+            try:
+                rid = int(k)
+                amt = int(v)
+            except Exception:
+                continue
+            if amt <= 0:
+                continue
+            put = self.add_cargo(rid, amt)
+            rem = amt - put
+            if rem > 0:
+                leftovers[rid] = rem
+            if self.cargo_free() <= 0:
+                # no more capacity; carry through any remaining items
+                for kk, vv in bundle.items():
+                    if kk == k:
+                        continue
+                    try:
+                        rr = int(kk); aa = int(vv)
+                    except Exception:
+                        continue
+                    if aa > 0:
+                        leftovers[rr] = leftovers.get(rr, 0) + aa
+                break
+        return leftovers
+
+    def try_remove_cargo_bundle(self, bundle: Dict[int, int]) -> Dict[int, int]:
+        """
+        Remove a set of resources {rid: amount}. Returns a dict of shortfalls
+        (how many we couldn't remove).
+        """
+        short: Dict[int, int] = {}
+        for k, v in (bundle or {}).items():
+            try:
+                rid = int(k)
+                amt = int(v)
+            except Exception:
+                continue
+            if amt <= 0:
+                continue
+            took = self.remove_cargo(rid, amt)
+            if took < amt:
+                short[rid] = (amt - took)
+        return short
+
+    def trim_cargo_to_capacity(self) -> int:
+        """
+        Optional utility: if total cargo exceeds capacity (e.g. after staging),
+        discard excess deterministically. Returns how many units were trimmed.
+        (You can replace this policy with 'spill to base' when landed.)
+        """
+        cap = int(max(0, self.cargo_capacity))
+        tot = self.cargo_total()
+        if tot <= cap:
+            return 0
+        to_trim = tot - cap
+
+        # Remove from the largest stacks first (deterministic).
+        items = sorted(self.cargo.items(), key=lambda kv: kv[1], reverse=True)
+        for rid, cnt in items:
+            if to_trim <= 0:
+                break
+            take = min(cnt, to_trim)
+            left = cnt - take
+            if left > 0:
+                self.cargo[rid] = left
+            else:
+                del self.cargo[rid]
+            to_trim -= take
+        return tot - self.cargo_total()
+
+
+
+    @property 
+    def has_payload(self) -> bool:
+        return self.payload != 0
+
 
     def can_unlock(self, upgrade_id: int) -> bool:
         tree = UPGRADE_TREES_BY_PAYLOAD.get(self.payload, {})
@@ -682,19 +1024,54 @@ class Vessel(PhysicsObject):
         if self.stage <= 0:
             print("Can not deploy - already deployed!")
             return
-        if (not force) and (not self.deployment_ready):
-            print("Can not deploy - not ready!")
-            return
-        elif (self.stage == 1) and (not self.deployment_ready):
-            print("Can not deploy to payload unless in space.")
+
+        if not force and not self.deployment_ready:
+            if self.stage == 1 and self.has_payload:
+                print("Can not deploy to payload unless in space.")
+            else:
+                print("Can not deploy - not ready!")
             return
 
         prev_stage = self.stage
         self.stage -= 1
         self.deployment_ready = False
 
-        # Remove components that no longer belong
+        # --- NEW: if we're dropping to the LAST stage (0), remember payload's world pos
+        payload_world_pre = None
+        if self.stage == 0:
+            # find the payload component (stage 0) or by id as a fallback
+            payload_comp = None
+            for c in self.components:
+                if int(getattr(c, "stage", 0)) == 0:
+                    payload_comp = c
+                    break
+            if payload_comp is None:
+                for c in self.components:
+                    if int(getattr(c, "id", 0)) == int(self.payload):
+                        payload_comp = c
+                        break
+            if payload_comp is not None:
+                payload_world_pre = self._component_world_position(
+                    (float(payload_comp.x), float(payload_comp.y))
+                )
+
+        # --- identify and spawn jettisoned parts for components no longer attached
+        try:
+            comps_to_drop = [(idx, c) for idx, c in enumerate(self.components)
+                            if int(getattr(c, "stage", 0)) > self.stage]
+            for idx, comp in comps_to_drop:
+                self._spawn_jettisoned_component(comp, idx)
+        except Exception as e:
+            print(f"⚠️ spawn jettisoned components failed: {e}")
+
+        # Remove components that no longer belong (also recomputes stats & CoM)
         self.drop_components()
+
+        # --- NEW: after CoM updates (now == payload local center), snap origin to saved world pos
+        if self.stage == 0 and payload_world_pre is not None:
+            self.position = payload_world_pre
+            # rotation/velocity unchanged; payload world pos remains continuous
+            print(f"📍 Snapped vessel origin to payload center at ({payload_world_pre[0]:.3f}, {payload_world_pre[1]:.3f})")
 
         # Kill thrust on stage change
         self.control_state[VesselState.CCW_THRUST_ON] = False
@@ -704,6 +1081,7 @@ class Vessel(PhysicsObject):
 
         print(f"✅ Vessel {self.object_id} staged: {prev_stage} → {self.stage} (components={len(self.components)})")
 
+        # Notify after snap so clients see the final, snapped position
         self._notify_force_resolve()
         if prev != self.stage:
             self._ensure_payload_behavior()
@@ -718,6 +1096,7 @@ class Vessel(PhysicsObject):
         # Now send the tree once we’re fully settled at stage 0
         if self.stage == 0:
             self._broadcast_upgrade_tree_to_agency()
+
 
 
     def _auto_stage_if_empty(self):
@@ -743,7 +1122,7 @@ class Vessel(PhysicsObject):
 
 
     def do_payload_mechanics(self, dt: float):
-        if self.stage != 0:
+        if self.stage != 0 or not self.has_payload:
             return
         self._ensure_payload_behavior()
         #print(f"[Vessel] mech tick oid={self.object_id} stage={self.stage} "
@@ -774,6 +1153,8 @@ class Vessel(PhysicsObject):
         self.deployment_ready = False
 
         # Only care when we’re about to drop from stage 1 -> 0
+        if not self.has_payload:
+            return
         if self.stage != 1 or not self.home_planet:
             return
 
@@ -839,6 +1220,16 @@ class Vessel(PhysicsObject):
 
     def _has_powered_magnetometer(self) -> bool:
         sys = self.systems.get(Systems.MAGNETOMETER)
+        if not sys or not sys.active or sys.amount <= 0.0:
+            return False
+        if self.power <= 0.05 * self.power_capacity:
+            return False
+        # optional: only when fully deployed
+        # if self.stage != 0: return False
+        return True
+
+    def _has_powered_ion_drive(self) -> bool:
+        sys = self.systems.get(Systems.ION_DRIVE)
         if not sys or not sys.active or sys.amount <= 0.0:
             return False
         if self.power <= 0.05 * self.power_capacity:
@@ -966,7 +1357,7 @@ class Vessel(PhysicsObject):
             self._maybe_rehome_to_strongest()
 
         _prev_rel = self._rel_speed_to(self.home_planet)
-
+        self.apply_ion_drive(dt)
         # 1. Apply Thrust before physics updates
         if self.control_state.get(VesselState.FORWARD_THRUSTER_ON, False):
             self.apply_forward_thrust(dt)
@@ -1046,6 +1437,7 @@ class Vessel(PhysicsObject):
         chunkpacket += struct.pack('<f', self.hull_integrity)
         chunkpacket += struct.pack('<f', self.liquid_fuel_kg)
         chunkpacket += struct.pack('<f', self.liquid_fuel_capacity_kg)
+        chunkpacket += struct.pack('<H', self.cargo_capacity)
         chunkpacket += struct.pack('<f', self.power)
         chunkpacket += struct.pack('<f', self.power_capacity)
         chunkpacket += struct.pack('<f', self.maximum_operating_temperature_c)
@@ -1089,9 +1481,13 @@ class Vessel(PhysicsObject):
         #    self.rotation_velocity = 0.0
 
     def current_payload_tree(self) -> Dict[int, UpgradeNode]:
+        if not self.has_payload: 
+            return {}
         return UPGRADE_TREES_BY_PAYLOAD.get(int(self.payload), {})
 
     def current_payload_unlocked(self) -> Set[int]:
+        if not self.has_payload:
+            return set()
         return self.unlocked_by_payload.setdefault(int(self.payload), set())
 
     def planet_income_multiplier(self) -> float:
@@ -1125,17 +1521,15 @@ class Vessel(PhysicsObject):
         return m
 
     def can_unlock_current(self, upgrade_id: int) -> bool:
-        if self.stage != 0:
+        if not self.has_payload or self.stage != 0:
             return False
-        tree = self.current_payload_tree()
-        node = tree.get(upgrade_id)
+        node = self.current_payload_tree().get(upgrade_id)
         if not node:
             return False
         have = self.current_payload_unlocked()
         return all(req in have for req in (node.requires or []))
 
     def unlock_current(self, upgrade_id: int) -> bool:
-        """Call after checking/charging costs on the Agency."""
         if not self.can_unlock_current(upgrade_id):
             return False
         self.current_payload_unlocked().add(upgrade_id)
@@ -1143,18 +1537,17 @@ class Vessel(PhysicsObject):
         return True
 
     def list_current_unlockables(self) -> Dict[int, bool]:
-        """For UI: upgrade_id -> can_unlock_now?  (prereqs + stage + tier gate)"""
+        if not self.has_payload or self.stage != 0:
+            return {}
         tree = self.current_payload_tree()
         have = self.current_payload_unlocked()
         max_tier = self._max_tier_for_current_payload()
-
-        out: Dict[int, bool] = {}
+        out = {}
         for up_id, node in tree.items():
             if up_id in have:
                 continue
-            can = (self.stage == 0
-                and all(req in have for req in (getattr(node, "requires", []) or []))
-                and int(getattr(node, "tier", 1)) <= int(max_tier))
+            can = all(req in have for req in (getattr(node, "requires", []) or [])) \
+                and int(getattr(node, "tier", 1)) <= int(max_tier)
             out[int(up_id)] = bool(can)
         return out
 
@@ -1445,27 +1838,26 @@ class Vessel(PhysicsObject):
         self.rotation_velocity = 0.0
         self.velocity = self.home_planet.velocity
 
-        self._trigger_build_on_land_if_any()
+        # (removed) self._trigger_build_on_land_if_any()
+
+        # ... existing math to set landed_angle_offset, position, rotation ...
+
+        # ---- NEW: payload landing hook with previous body id ----
+        prev_id = int(self.last_landed_body_id) if self.last_landed_body_id is not None else None
+        self._ensure_payload_behavior()
+        if self.payload_behavior and hasattr(self.payload_behavior, "on_land"):
+            try:
+                self.payload_behavior.on_land(self.home_planet, prev_body_id=prev_id)
+            except Exception as e:
+                print(f"[Vessel] payload on_land error: {e}")
+
+        # mark visited & update “last landed on”
+        pid = int(getattr(self.home_planet, "object_id", 0) or 0)
+        if pid > 0 and pid not in set(int(x) for x in (self.planets_visited or [])):
+            self.planets_visited.append(pid)
+        self.last_landed_body_id = pid
 
 
-        # Math-world angle at the touch point (atan2 is CCW, +y up)
-        dx = self.position[0] - self.home_planet.position[0]
-        dy = self.position[1] - self.home_planet.position[1]
-        angle_ccw = math.degrees(math.atan2(dy, dx))
-
-        # Store an offset that lives in the same "space" as planet.rotation
-        self.landed_angle_offset = self._offset_from_world_angle(self.home_planet.rotation, angle_ccw)
-
-        # Rebuild exact surface position using a *consistent* transform
-        R = float(self.home_planet.radius_km)
-        world_deg = self._world_angle_from_planet(self.home_planet.rotation, self.landed_angle_offset)
-        ang = math.radians(world_deg)
-
-        cx, cy = self.home_planet.position
-        self.position = (cx + R * math.cos(ang), cy + R * math.sin(ang))
-
-        # Face radially (use the same world angle you just used for placement)
-        self.rotation = -world_deg
 
 
     def stay_landed(self):
@@ -1488,9 +1880,18 @@ class Vessel(PhysicsObject):
 
     def unland(self):
         self.landed = False
-        self.altitude = 0.1  # start just above the ground
+        self.altitude = 0.1
         self.z_velocity = 0.2
-        self.unland_grace_time_s = 0.75  # <— 3/4s grace
+        self.unland_grace_time_s = 0.75
+
+        # NEW: delegate takeoff/unland to payload behavior (optional)
+        self._ensure_payload_behavior()
+        if self.payload_behavior and hasattr(self.payload_behavior, "on_unland"):
+            try:
+                self.payload_behavior.on_unland(self.home_planet)
+            except Exception as e:
+                print(f"[Vessel] payload on_unland error: {e}")
+
 
 
 
@@ -2108,9 +2509,9 @@ def construct_vessel_from_request(shared, player, vessel_request_data) -> Vessel
         # Deduct money and create vessel
         player.money -= total_cost
         print("Creating vessel")
-
         payload_idx = detect_payload_index(components, component_data_lookup)
         stages = calculate_component_stages(components, connections, component_data_lookup, payload_idx)
+
         for comp, st in zip(components, stages):
             setattr(comp, "stage", st)
 
@@ -2124,13 +2525,20 @@ def construct_vessel_from_request(shared, player, vessel_request_data) -> Vessel
             velocity=(0, 0),
             mass=1000.0
         )
-        vessel.shared=shared
+        vessel.shared = shared
         vessel.name = vessel_name
         vessel.launchpad_planet_id = planet_id
         vessel.stage, vessel.num_stages = max(stages), max(stages) + 1
-        vessel.payload = components[payload_idx].id
+
+        if payload_idx is not None:
+            vessel.payload = components[payload_idx].id
+        else:
+            vessel.payload = 0  # or some sentinel meaning "no payload"
+
         vessel.calculate_vessel_stats()
+
         vessel._ensure_payload_behavior()
+
 
         # Add vessel to its agency
         agency = shared.agencies.get(player.agency_id)
@@ -2176,13 +2584,13 @@ def construct_vessel_from_request(shared, player, vessel_request_data) -> Vessel
         _notify_player_udp(shared, steam_id, 1, f"Construction failed: {e}")
         raise
 
-def detect_payload_index(components, component_data_lookup) -> int:
+def detect_payload_index(components, component_data_lookup) -> Optional[int]:
     """
     Return the index of the component whose attributes['is-payload'] is truthy.
-    Raises a clear error if none exists (this should never happen per your data).
+    If none exist, return None.
     """
     for i, comp in enumerate(components):
         attrs = (component_data_lookup.get(comp.id, {}) or {}).get("attributes", {}) or {}
         if attrs.get("is-payload"):
             return i
-    raise ValueError("No component with attributes['is-payload'] found in vessel.")
+    return None

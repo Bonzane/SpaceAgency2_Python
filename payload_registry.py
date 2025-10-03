@@ -7,7 +7,8 @@ REGISTRY = {
     int(Components.COMMUNICATIONS_SATELLITE): CommsSatellite,
     int(Components.SPACE_TELESCOPE):          SpaceTelescope,
     int(Components.PROBE):                    Probe,
-    int(Components.SOLAR_ORBITER):            SolarOrbiter
+    int(Components.SOLAR_ORBITER):            SolarOrbiter,
+    int(Components.LUNAR_LANDER_P):           LunarLander,
 }
 
 def make_payload_behavior(vessel):

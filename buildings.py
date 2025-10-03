@@ -1,5 +1,6 @@
 from enum import Enum, IntEnum
 import random
+from vessels import Vessel
 
 class BuildingType(IntEnum):
     UNDEFINED = 0
@@ -13,6 +14,8 @@ class BuildingType(IntEnum):
     INTEFEROMETER = 8
     CHEMICAL_LAB = 9
     MOON_HQ = 10
+    DATA_CENTER = 11
+    REFUELING_STATION = 12
 
 
 class Building:
@@ -41,6 +44,28 @@ class Building:
 
         self.construction_time = self.default_data.get("build_time", 0)
         pass
+
+    def _refuel_vessel(self, v, amount: float) -> float:
+            """
+            Try to add `amount` units of propellant/fuel to vessel `v`.
+            Returns how much was actually added (0 if nothing to refuel).
+            Supports multiple common field names to avoid tight coupling.
+            """
+            # (field, capacity_field) candidates
+            candidates = [
+                ("liquid_fuel_kg", "liquid_fuel_capacity_kg")
+            ]
+            for f, cap in candidates:
+                if hasattr(v, f):
+                    cur = float(getattr(v, f) or 0.0)
+                    capv = float(getattr(v, cap, 0.0) or 0.0)
+                    if capv <= 0.0 or cur >= capv:
+                        return 0.0
+                    new_val = min(capv, cur + float(amount))
+                    setattr(v, f, new_val)
+                    return new_val - cur
+            return 0.0
+
 
     def update(self):
         if not self.constructed:
@@ -71,7 +96,49 @@ class Building:
                         if total < cap:
                             inv[mined_resource] = inv.get(mined_resource, 0) + 1
                             self.agency.base_inventories[self.planet_id] = inv
+            case BuildingType.REFUELING_STATION:
+                if not self.constructed:
+                    return
 
+                # Units per second from your JSON; scale by level if you want:
+                base_rate = 10.0
+                if base_rate <= 0.0:
+                    return
+
+                add_amt = base_rate * (float(self.level))
+                if add_amt <= 0.0:
+                    return
+
+                planet_id = int(self.planet_id)
+                # print("Refueling station on planet: ", planet_id)
+                # Refuel landed vessels that are on THIS planet (vessel-owned state only).
+                for v in list(self.agency.vessels):
+                    try:
+                        if not isinstance(v, Vessel):
+                            continue
+                        if not getattr(v, "landed", False):
+                            continue
+                        # print("Refueling vessel")
+                        hp = getattr(v, "last_landed_body_id",  getattr(v, "home_planet", None))
+                        if hp is None or hp != int(planet_id):
+                            # print("Wrong Planet: Vessel is on ", hp)
+                            continue  # not on this planet
+                        # print("Same Planet")
+                        # Current-stage tank interface (keeps gameplay consistent):
+                        cur = float(v._current_stage_fuel())
+                        cap = float(v._current_stage_capacity())
+                        if cap <= 0.0 or cur >= cap:
+                            continue
+
+                        put = min(add_amt, cap - cur)
+                        if put <= 0.0:
+                            continue
+                        print(f"Refueling {put} units")
+                        v._set_current_stage_fuel(cur + put)
+                        v.liquid_fuel_kg = v._current_stage_fuel()  # mirror legacy flat field
+                        v.mass = v.calculate_mass(self.shared.component_data)
+                    except Exception:
+                        continue
 
 
     def get_income_from_building(self):

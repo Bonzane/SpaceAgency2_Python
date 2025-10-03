@@ -745,27 +745,27 @@ class StreamingServer:
 
         elif data[0] == DataGramPacketType.RESOLVE_VESSEL:
             if len(data) < 9:
-                print("⚠️ Invalid RESOLVE_VESSEL packet length.")
-                return   
+                print("⚠️ Invalid RESOLVE_VESSEL packet length."); return
             vessel_id = int.from_bytes(data[1:9], 'little')
             key = (ip, port)
             session = self.shared.udp_endpoint_to_session.get(key)
             if not session:
-                print(f"❌ Unknown session for {key}")
-                return
+                print(f"❌ Unknown session for {key}"); return
             player = session.player
             if not player:
-                print(f"❌ No player bound to session {session.temp_id}")
-                return
+                print(f"❌ No player bound to session {session.temp_id}"); return
             chunk_key = (player.galaxy, player.system)
             chunk = self.shared.chunk_manager.loaded_chunks.get(chunk_key)
             if not chunk:
-                print(f"❌ Couldn't find chunk {chunk_key}")
-                return
+                print(f"❌ Couldn't find chunk {chunk_key}"); return
             vessel = chunk.get_object_by_id(vessel_id)
-            #Note - this will actually be sending the response as TCP with included JSON
-            # even though it's a response to a UDP packet. 
+
+            # Ensure cargo dict exists on the vessel
+            if vessel:
+                self._ensure_vessel_cargo(vessel)
+
             asyncio.create_task(session.send(self.build_resolve_vessel_packet(vessel)))
+
 
         elif data[0] == DataGramPacketType.REQUEST_VESSEL_TREE_UPGRADE:
             # need 1(opcode)+8(vessel id)+2(upgrade id)
@@ -988,7 +988,433 @@ class StreamingServer:
                 self._udp_send_to_session(session, self.build_notification_packet(1, f"Suit change failed: {reason}"))
                 print(f"🧑‍🚀 Suit change failed({reason}): astro={astro_id} -> suit={suit_id}")
 
+        elif data[0] == DataGramPacketType.UNBOARD_ASTRONAUT:
+            # [1] opcode + [4] astronaut_id (u32) + [8] vessel_id (u64)
+            if len(data) < 1 + 4 + 8:
+                print("⚠️ UNBOARD_ASTRONAUT: packet too short")
+                return
 
+            astro_id  = int.from_bytes(data[1:5],  'little', signed=False)
+            vessel_id = int.from_bytes(data[5:13], 'little', signed=False)
+
+            key = (ip, port)
+            session = self.shared.udp_endpoint_to_session.get(key)
+            if not session or not session.alive:
+                print(f"❌ Unknown or dead session for {key}")
+                return
+            player = getattr(session, "player", None)
+            if not player:
+                print(f"❌ No player bound to session {getattr(session, 'temp_id', 0)}")
+                return
+
+            chunk_key = (player.galaxy, player.system)
+            chunk = self.shared.chunk_manager.loaded_chunks.get(chunk_key)
+            if not chunk:
+                self._udp_send_to_session(session, self.build_notification_packet(1, "Unboard failed: chunk not loaded"))
+                return
+            vessel = chunk.get_object_by_id(vessel_id)
+            if not vessel:
+                self._udp_send_to_session(session, self.build_notification_packet(1, "Unboard failed: vessel not found"))
+                return
+
+            if getattr(vessel, "agency_id", None) != getattr(player, "agency_id", None):
+                self._udp_send_to_session(session, self.build_notification_packet(1, "Unboard failed: not your agency's vessel"))
+                return
+
+            agency = self.shared.agencies.get(player.agency_id)
+            if not agency:
+                self._udp_send_to_session(session, self.build_notification_packet(1, "Unboard failed: agency not found"))
+                return
+
+            ok, reason = agency.move_astronaut_off_vessel(astro_id, vessel)
+            if ok:
+                name = getattr(agency.astronauts.get(astro_id), "name", f"Astronaut {astro_id}")
+                self._udp_send_to_session(session, self.build_notification_packet(2, f"{name} unboarded."))
+                print(f"🧑‍🚀 UNBOARD ok: astro={astro_id} <- vessel={vessel_id}")
+            else:
+                self._udp_send_to_session(session, self.build_notification_packet(1, f"Unboard failed: {reason}"))
+                print(f"🧑‍🚀 UNBOARD fail({reason}): astro={astro_id} <- vessel={vessel_id}")
+
+        elif data[0] == DataGramPacketType.CHANGE_ASTRONAUT_SUIT:
+            # [1] opcode + [4] astronaut_id (u32) + [2] suit_id (u16)
+            if len(data) < 1 + 4 + 2:
+                print("⚠️ CHANGE_ASTRONAUT_SUIT: packet too short")
+                return
+
+            astro_id = int.from_bytes(data[1:5], 'little', signed=False)
+            suit_id  = int.from_bytes(data[5:7], 'little', signed=False)
+
+            key = (ip, port)
+            session = self.shared.udp_endpoint_to_session.get(key)
+            if not session or not session.alive:
+                print(f"❌ Unknown or dead session for {key}")
+                return
+            player = getattr(session, "player", None)
+            if not player:
+                print(f"❌ No player bound to session {getattr(session, 'temp_id', 0)}")
+                return
+
+            agency = self.shared.agencies.get(getattr(player, "agency_id", 0))
+            if not agency:
+                self._udp_send_to_session(session, self.build_notification_packet(1, "Suit change failed: agency not found"))
+                return
+
+            # ownership: astronaut must belong to this agency
+            astro = agency.astronauts.get(int(astro_id))
+            if not astro or int(getattr(astro, "agency_id", -1)) != int(agency.id64):
+                self._udp_send_to_session(session, self.build_notification_packet(1, "Suit change failed: astronaut not found or not yours"))
+                return
+
+            # apply
+            ok, reason = agency.set_astronaut_suit(astro_id, suit_id) if hasattr(agency, "set_astronaut_suit") else (True, "ok")
+            if ok:
+                # if no helper, set directly:
+                if not hasattr(agency, "set_astronaut_suit"):
+                    s = suit_id if suit_id >= 0 else 0
+                    astro.suit_id = int(s)
+
+                name = getattr(astro, "name", f"Astronaut {astro_id}")
+                self._udp_send_to_session(session, self.build_notification_packet(2, f"{name}'s suit set to {int(astro.suit_id)}."))
+                print(f"🧑‍🚀 Suit changed: astro={astro_id} -> suit={int(astro.suit_id)}")
+                # UI will pick this up on the next agency gamestate tick
+            else:
+                self._udp_send_to_session(session, self.build_notification_packet(1, f"Suit change failed: {reason}"))
+                print(f"🧑‍🚀 Suit change failed({reason}): astro={astro_id} -> suit={suit_id}")
+
+
+        elif data[0] == DataGramPacketType.GET_JETTISON:
+            # layout (request): [u8 opcode][u64 object_id]
+            if len(data) < 1 + 8:
+                print("⚠️ GET_JETTISON: packet too short")
+                return
+
+            asked_oid = int.from_bytes(data[1:9], 'little', signed=False)
+
+            key = (ip, port)
+            session = self.shared.udp_endpoint_to_session.get(key)
+            if not session or not session.alive:
+                print(f"❌ Unknown or dead session for {key}")
+                return
+            player = getattr(session, "player", None)
+            if not player:
+                print(f"❌ No player bound to session {getattr(session,'temp_id',0)}")
+                return
+
+            # try player’s current chunk first
+            chunk_key = (player.galaxy, player.system)
+            chunk = self.shared.chunk_manager.loaded_chunks.get(chunk_key)
+
+            obj = None
+            if chunk:
+                obj = chunk.get_object_by_id(asked_oid)
+
+            # fallback: global index → chunk
+            if obj is None:
+                cm = self.shared.chunk_manager
+                c = cm.get_chunk_from_object_id(asked_oid)
+                if c:
+                    obj = c.get_object_by_id(asked_oid)
+
+            comp_id = 0
+            if obj is None:
+                print(f"GET_JETTISON: oid={asked_oid} not found in chunk {chunk_key} (may have expired).")
+            else:
+                # validate it’s actually a jettisoned component
+                from gameobjects import ObjectType
+                if getattr(obj, "object_type", None) == ObjectType.JETTISONED_COMPONENT:
+                    comp_id = int(getattr(obj, "component_id", 0))
+                    if comp_id == 0:
+                        # backwards-compat: if you only stored index earlier, you can’t reconstruct reliably here.
+                        # keep 0 and log.
+                        print(f"GET_JETTISON: oid={asked_oid} has no component_id (old spawn?).")
+                else:
+                    print(f"GET_JETTISON: oid={asked_oid} is not a jettisoned component (type={getattr(obj,'object_type',None)}).")
+
+            # Build reply: [u8 opcode][u64 object_id][u16 component_id]
+            resp = bytearray()
+            resp.append(DataGramPacketType.GET_JETTISON)
+            resp += struct.pack('<Q', asked_oid)
+            resp += struct.pack('<H', comp_id & 0xFFFF)
+
+            self.transport.sendto(resp, addr)
+
+        elif data[0] == DataGramPacketType.CARGO_ADD:
+            # [u8 opcode][u64 vessel_id][u64 planet_id][u16 n][n x (u32 rid, u32 amt)]
+            if len(data) < 1 + 8 + 8 + 2:
+                print("⚠️ CARGO_ADD: packet too short"); return
+
+            vessel_id = int.from_bytes(data[1:9],  "little", signed=False)
+            planet_id = int.from_bytes(data[9:17], "little", signed=False)
+            n_pairs   = int.from_bytes(data[17:19], "little", signed=False)
+            pairs, _  = self._extract_resource_pairs(data, 19, n_pairs)
+            if pairs is None:
+                print("⚠️ CARGO_ADD: pairs truncated"); return
+
+            key = (ip, port)
+            session = self.shared.udp_endpoint_to_session.get(key)
+            if not session or not session.alive:
+                print(f"❌ Unknown or dead session for {key}"); return
+            player = getattr(session, "player", None)
+            if not player:
+                print(f"❌ No player bound to session {getattr(session, 'temp_id', 0)}"); return
+
+            # resolve vessel via the player's current chunk (your standard access pattern)
+            chunk_key = (player.galaxy, player.system)
+            chunk = self.shared.chunk_manager.loaded_chunks.get(chunk_key)
+            if not chunk:
+                self._udp_send_to_session(session, self.build_notification_packet(1, "Cargo load failed: chunk not loaded")); return
+            vessel = chunk.get_object_by_id(vessel_id)
+            if not vessel:
+                self._udp_send_to_session(session, self.build_notification_packet(1, "Cargo load failed: vessel not found")); return
+
+            # ensure a cargo dict lives on the vessel (important for Vessel.__eq__ too)
+            cargo = self._ensure_vessel_cargo(vessel)
+            if cargo is None:
+                self._udp_send_to_session(session, self.build_notification_packet(1, "Cargo load failed: cannot attach cargo to vessel")); return
+
+            # must control the vessel (same rule you already use elsewhere)
+            if int(getattr(vessel, "controlled_by", 0)) not in (int(getattr(player, "steamID", 0)), int(getattr(player, "steam_id", 0))):
+                self._udp_send_to_session(session, self.build_notification_packet(1, "Cargo load failed: you must be controlling this vessel")); return
+
+            # same-planet rule
+            if not self._guess_landed_on_planet(vessel, int(planet_id), chunk):
+                self._udp_send_to_session(session, self.build_notification_packet(1, "Cargo load failed: vessel must be landed on that planet")); return
+
+            # base inventory for this planet
+            agency, inv = self._get_agency_base_inventory(player, int(planet_id))
+            if not agency or inv is None:
+                self._udp_send_to_session(session, self.build_notification_packet(1, "Cargo load failed: base inventory unavailable")); return
+            cap = int(getattr(vessel, "cargo_capacity", 0)) or 0
+            used = sum(int(v) for v in cargo.values())
+            space_left = max(0, cap - used) if cap > 0 else None  # None means unlimited
+            total_loaded = 0
+            for rid, want in pairs:
+                want = int(want)
+                if want <= 0:
+                    continue
+                have = int(inv.get(int(rid), 0))
+                if have <= 0:
+                    continue
+
+                take = min(want, have)
+                if space_left is not None:
+                    take = min(take, space_left - total_loaded)
+
+                if take <= 0:
+                    continue
+
+                cargo[int(rid)] = int(cargo.get(int(rid), 0)) + take
+                inv[int(rid)] = have - take
+                total_loaded += take
+
+            self._udp_send_to_session(session, self.build_cargo_state_packet(vessel, int(planet_id)))
+            if total_loaded == 0:
+                self._udp_send_to_session(session, self.build_notification_packet(1, "Nothing loaded (no base stock)."))
+
+        elif data[0] == DataGramPacketType.CARGO_REMOVE:
+            # [u8 opcode][u64 vessel_id][u64 planet_id][u16 n][n x (u32 rid, u32 amt)]
+            if len(data) < 1 + 8 + 8 + 2:
+                print("⚠️ CARGO_REMOVE: packet too short"); return
+
+            vessel_id = int.from_bytes(data[1:9],  "little", signed=False)
+            planet_id = int.from_bytes(data[9:17], "little", signed=False)
+            n_pairs   = int.from_bytes(data[17:19], "little", signed=False)
+            pairs, _  = self._extract_resource_pairs(data, 19, n_pairs)
+            if pairs is None:
+                print("⚠️ CARGO_REMOVE: pairs truncated"); return
+
+            key = (ip, port)
+            session = self.shared.udp_endpoint_to_session.get(key)
+            if not session or not session.alive:
+                print(f"❌ Unknown or dead session for {key}"); return
+            player = getattr(session, "player", None)
+            if not player:
+                print(f"❌ No player bound to session {getattr(session, 'temp_id', 0)}"); return
+
+            chunk_key = (player.galaxy, player.system)
+            chunk = self.shared.chunk_manager.loaded_chunks.get(chunk_key)
+            if not chunk:
+                self._udp_send_to_session(session, self.build_notification_packet(1, "Cargo unload failed: chunk not loaded")); return
+            vessel = chunk.get_object_by_id(vessel_id)
+            if not vessel:
+                self._udp_send_to_session(session, self.build_notification_packet(1, "Cargo unload failed: vessel not found")); return
+
+            cargo = self._ensure_vessel_cargo(vessel)
+            if cargo is None:
+                self._udp_send_to_session(session, self.build_notification_packet(1, "Cargo unload failed: cannot access vessel cargo")); return
+
+            if int(getattr(vessel, "controlled_by", 0)) not in (int(getattr(player, "steamID", 0)), int(getattr(player, "steam_id", 0))):
+                self._udp_send_to_session(session, self.build_notification_packet(1, "Cargo unload failed: you must be controlling this vessel")); return
+
+            if not self._guess_landed_on_planet(vessel, int(planet_id), chunk):
+                self._udp_send_to_session(session, self.build_notification_packet(1, "Cargo unload failed: vessel must be landed on that planet")); return
+
+            agency, inv = self._get_agency_base_inventory(player, int(planet_id))
+            if not agency or inv is None:
+                self._udp_send_to_session(session, self.build_notification_packet(1, "Cargo unload failed: base inventory unavailable")); return
+
+            total_unloaded = 0
+            for rid, want in pairs:
+                want = int(want)
+                if want <= 0: continue
+                have = int(cargo.get(int(rid), 0))
+                if have <= 0: continue
+
+                take = min(want, have)
+                left = have - take
+                if left > 0:
+                    cargo[int(rid)] = left
+                else:
+                    cargo.pop(int(rid), None)
+
+                inv[int(rid)] = int(inv.get(int(rid), 0)) + take
+                total_unloaded += take
+
+            self._udp_send_to_session(session, self.build_cargo_state_packet(vessel, int(planet_id)))
+            if total_unloaded == 0:
+                self._udp_send_to_session(session, self.build_notification_packet(1, "Nothing unloaded (no cargo onboard)."))
+
+        elif data[0] == DataGramPacketType.CARGO_STATE:
+            # [u8 opcode][u64 vessel_id]
+            if len(data) < 1 + 8:
+                print("⚠️ CARGO_STATE: packet too short"); return
+
+            vessel_id = int.from_bytes(data[1:9],  "little", signed=False)
+            chunk_key = (player.galaxy, player.system)
+            chunk = self.shared.chunk_manager.loaded_chunks.get(chunk_key)
+            if not chunk:
+                self._udp_send_to_session(session, self.build_notification_packet(1, "Cargo state failed: chunk not loaded")); return
+            vessel = chunk.get_object_by_id(vessel_id)
+            if not chunk:
+                self._udp_send_to_session(session, self.build_notification_packet(1, "Could not find that vessel cargo state on the server end")); return
+            
+            self._udp_send_to_session(session, self.build_cargo_state_packet(vessel, 0))         
+
+
+    # ---------- Cargo helpers ----------
+    def _ensure_vessel_cargo(self, vessel):
+        """Guarantee vessel.cargo exists as a dict[int,int]."""
+        try:
+            if not hasattr(vessel, "cargo") or vessel.cargo is None:
+                vessel.cargo = {}
+        except Exception:
+            # Fallback if the class is restrictive (unlikely, but safe):
+            try:
+                object.__setattr__(vessel, "cargo", {})
+            except Exception:
+                return None
+        return vessel.cargo
+
+    def _guess_landed_on_planet(self, vessel, planet_id: int, chunk) -> bool:
+        """
+        Keep the same 'no assumptions' approach:
+        prefer (landed + home_planet.object_id) if present; else just
+        ensure the planet object exists in the same chunk.
+        """
+        try:
+            if hasattr(vessel, "landed") and hasattr(vessel, "home_planet"):
+                hp = getattr(vessel, "home_planet")
+                hp_id = int(getattr(hp, "object_id", 0)) if hp else 0
+                return bool(getattr(vessel, "landed")) and hp_id == int(planet_id)
+        except Exception:
+            pass
+        try:
+            return chunk.get_object_by_id(int(planet_id)) is not None
+        except Exception:
+            return False
+
+    def build_cargo_state_packet(self, vessel, planet_id: int) -> bytes:
+        """
+        Snapshot using vessel.cargo (kept on the Vessel).
+        Layout:
+          u8  opcode = CARGO_STATE
+          u64 vessel_id
+          u64 planet_id
+          u16 cap    (0 = unspecified)
+          u16 used   (sum of amounts, u16 clamp)
+          u16 n_items
+          [n_items x (u32 rid, u32 amt)]
+        """
+        vc = getattr(vessel, "cargo", {}) or {}
+        items = [(int(r), int(a)) for r, a in vc.items() if int(a) > 0]
+        used = sum(a for _, a in items)
+
+        pkt = bytearray()
+        pkt.append(DataGramPacketType.CARGO_STATE)
+        pkt += struct.pack("<QQ", int(getattr(vessel, "object_id", 0)), int(planet_id))
+        pkt += struct.pack("<HHH", 0, min(int(used), 0xFFFF), min(len(items), 0xFFFF))
+        for rid, amt in items:
+            pkt += struct.pack("<II", rid & 0xFFFFFFFF, amt & 0xFFFFFFFF)
+        return pkt
+
+
+    def _find_vessel_for_session(self, session, vessel_id: int):
+        """Find a vessel by id in the player's current chunk."""
+        player = getattr(session, "player", None)
+        if not player:
+            return None
+        chunk_key = (player.galaxy, player.system)
+        chunk = self.shared.chunk_manager.loaded_chunks.get(chunk_key)
+        if not chunk:
+            return None
+        return chunk.get_object_by_id(int(vessel_id))
+
+    def _get_agency_base_inventory(self, player, planet_id: int):
+        """Return (agency, base_inventory_dict) or (None, None). Coerces keys to int."""
+        agency = self.shared.agencies.get(getattr(player, "agency_id", 0))
+        if not agency:
+            return None, None
+        inv_all = getattr(agency, "base_inventories", None)
+        if not isinstance(inv_all, dict):
+            return agency, None
+        from utils import _coerce_int_keys
+        inv = inv_all.get(int(planet_id))
+        if inv is None:
+            return agency, None
+        inv = _coerce_int_keys(inv)
+        inv_all[int(planet_id)] = inv  # keep normalized
+        return agency, inv
+
+    def _extract_resource_pairs(self, data: bytes, offset: int, count: int):
+        """Parse [count x (u32 id, u32 amt)] from data[offset:]. Returns (list[(id, amt)], new_offset) or (None, offset) on error."""
+        need = count * (4 + 4)
+        if len(data) < offset + need:
+            return None, offset
+        out = []
+        for _ in range(count):
+            rid = int.from_bytes(data[offset:offset+4], "little", signed=False); offset += 4
+            amt = int.from_bytes(data[offset:offset+4], "little", signed=False); offset += 4
+            if amt > 0:
+                out.append((rid, amt))
+        return out, offset
+
+    def build_cargo_state_packet(self, vessel, planet_id: int) -> bytes:
+        """
+        Snapshot of vessel cargo after a transfer.
+        Layout:
+          u8  opcode = CARGO_STATE
+          u64 vessel_id
+          u64 planet_id
+          u16 cap
+          u16 used
+          u16 n_items
+          [n_items x (u32 rid, u32 amt)]
+        """
+        try:
+            cap = int(max(0, getattr(vessel, "cargo_capacity", 0)))
+            cargo = getattr(vessel, "cargo", {}) or {}
+            used = sum(int(max(0, v)) for v in cargo.values())
+            items = [(int(k), int(v)) for k, v in cargo.items() if int(v) > 0]
+        except Exception:
+            cap, used, items = 0, 0, []
+
+        pkt = bytearray()
+        pkt.append(DataGramPacketType.CARGO_STATE)
+        pkt += struct.pack("<QQ", int(getattr(vessel, "object_id", 0)), int(planet_id))
+        pkt += struct.pack("<HHH", cap & 0xFFFF, used & 0xFFFF, len(items) & 0xFFFF)
+        for rid, amt in items:
+            pkt += struct.pack("<II", rid & 0xFFFFFFFF, amt & 0xFFFFFFFF)
+        return pkt
 
     def error_received(self, exc):
         print(f"⚠️ UDP error received: {exc}")

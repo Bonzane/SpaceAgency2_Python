@@ -31,10 +31,10 @@ class UpgradeNode:
 # Key the inner dict by int (not str), since you’re using IntEnum keys
 UPGRADE_TREES_BY_PAYLOAD: Dict[int, Dict[int, UpgradeNode]] = {
     int(Components.COMMUNICATIONS_SATELLITE): {
-        T_UP.PING1:        UpgradeNode(T_UP.PING1,        1, [],                       5000),
-        T_UP.NETWORKING1:  UpgradeNode(T_UP.NETWORKING1,  1, [],                      15000),
-        T_UP.PING2:        UpgradeNode(T_UP.PING2,        2, [T_UP.PING1],            20000),
-        T_UP.NETWORKING2:  UpgradeNode(T_UP.NETWORKING2,  2, [T_UP.NETWORKING1],      45000)
+        T_UP.PING1:        UpgradeNode(T_UP.PING1,        1, [],                       15000),
+        T_UP.NETWORKING1:  UpgradeNode(T_UP.NETWORKING1,  1, [],                      5000),
+        T_UP.PING2:        UpgradeNode(T_UP.PING2,        2, [T_UP.PING1],            45000),
+        T_UP.NETWORKING2:  UpgradeNode(T_UP.NETWORKING2,  2, [T_UP.NETWORKING1],      20000)
     },
     int(Components.SPACE_TELESCOPE): {
         T_UP.EXPOSURE1:    UpgradeNode(T_UP.EXPOSURE1,     1, [],                      15000),

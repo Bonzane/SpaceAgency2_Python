@@ -10,6 +10,11 @@ import bisect
 from regions import Region
 from resources import Resource
 import random
+from pathlib import Path
+import os
+
+ID_SEQ_FILENAME = "object_id.seq"
+
 
 class ObjectType(IntEnum):
     UNDEFINED = 0
@@ -56,13 +61,12 @@ class ObjectType(IntEnum):
     PROCEDURAL_ROCKY_PLANET = 41
     PROCEDURAL_GAS_GIANT = 42
     BASIC_VESSEL = 43
+    JETTISONED_COMPONENT = 44
 
 # Asteroid belt rough bounds (in km). 
 ASTEROID_BELT_INNER_KM = 300_000_000.0
 ASTEROID_BELT_OUTER_KM = 480_000_000.0
 
-# ID GEN
-_object_id_counter = itertools.count(1)
 
 # ---------------- Physics Data ----------------
 
@@ -102,6 +106,33 @@ class GameObject:
         cls._next_id += 1
         return obj_id
 
+    @classmethod
+    def set_next_id(cls, n: int) -> int:
+        cls._next_id = max(1, int(n))
+        return cls._next_id
+    
+    @classmethod
+    def load_id_seq(cls, universe_path: Union[str, Path]) -> int:
+        """Load next-id from disk if present; return the resulting _next_id."""
+        p = Path(universe_path) / ID_SEQ_FILENAME
+        try:
+            n = int(p.read_text(encoding="utf-8").strip())
+            return cls.set_next_id(n)
+        except Exception:
+            # No file or bad contents — leave as-is
+            return cls._next_id   
+
+    @classmethod
+    def save_id_seq(cls, universe_path: Union[str, Path]) -> None:
+        """Atomically save current _next_id to disk."""
+        p = Path(universe_path) / ID_SEQ_FILENAME
+        tmp = p.with_suffix(p.suffix + ".tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(str(cls._next_id))
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, p)
+
     def serialize(self, filepath: str):
         with open(filepath, "wb") as f:
             pickle.dump(self, f)
@@ -138,6 +169,59 @@ class PhysicsObject(GameObject):
 
         self.velocity = (vx, vy)
         self.position = (px, py)
+
+
+# Jettisoned Components
+class JettisonedComponent(PhysicsObject):
+    def __init__(
+        self,
+        position: Tuple[float, float],
+        velocity: Tuple[float, float],
+        mass: float,
+        radius_km: float,
+        component_index: int,
+        component_id: int = 0
+    ):
+        super().__init__(
+            object_type=ObjectType.JETTISONED_COMPONENT,
+            position=position,
+            velocity=velocity,
+            mass=mass,
+            radius_km=radius_km
+        )
+
+        self.component_index = component_index
+        self.component_id = component_id
+        self.age = 0.0
+        # make lifetime configurable for debugging
+        self.lifetime = 400.0
+
+
+        # debug flags to avoid log spam
+        self._warned_50 = False
+        self._warned_80 = False
+
+        print(f"🧩 JettisonedComponent CREATED id={int(self.object_id)} "
+              f"comp_index={int(component_index)} pos={tuple(map(float, position))} "
+              f"vel={tuple(map(float, velocity))} mass={float(mass)}kg r={float(radius_km)}km "
+              f"lifetime={self.lifetime:.2f}s")
+
+    def do_update(self, dt: float, acc: Tuple[float, float]):
+        super().do_update(dt, acc)
+        self.age += dt * 0.01
+        # milestone logs without spamming every tick
+        frac = self.age / max(1e-9, self.lifetime)
+        if not self._warned_50 and frac >= 0.50:
+            self._warned_50 = True
+            print(f"⏱️ JC id={int(self.object_id)} reached 50% lifetime (age={self.age:.2f}/{self.lifetime:.2f}s)")
+        if not self._warned_80 and frac >= 0.80:
+            self._warned_80 = True
+            print(f"⏱️ JC id={int(self.object_id)} reached 80% lifetime (age={self.age:.2f}/{self.lifetime:.2f}s)")
+
+    @property
+    def expired(self) -> bool:
+        return self.age >= self.lifetime
+
 
 
 

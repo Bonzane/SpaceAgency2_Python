@@ -110,6 +110,26 @@ class CommsSatellite(PayloadBehavior):
             v.credit_income(extra_payout)
 
 class SpaceTelescope(PayloadBehavior):
+
+    def _discover_targets(self, objs):
+        """Mark planets in sight as discovered for this vessel's agency."""
+        v = self.vessel
+        shared = getattr(v, "shared", None)
+        if not shared:
+            return 0
+        agency = shared.agencies.get(v.agency_id)
+        if not agency:
+            return 0
+        new = 0
+        for o in objs:
+            if not isinstance(o, Planet):
+                continue
+            pid = int(getattr(o, "object_id", 0) or 0)
+            if pid > 0 and agency.discover_planet(pid):
+                new += 1
+        return new
+
+
     def _apply_rcs_pointing(self, seconds: float):
         v = self.vessel
         current_aim = -float(v.rotation)
@@ -152,16 +172,20 @@ class SpaceTelescope(PayloadBehavior):
         if v.stage != 0:
             return
 
-        agency = v.shared.agencies.get(v.agency_id)
+        shared = getattr(v, "shared", None)
+        if not shared:
+            return
+        agency = shared.agencies.get(v.agency_id)
         if not agency:
             return
 
-        gs = float(getattr(v.shared, "gamespeed", 1.0))
+        # Real seconds, not sim seconds
+        gs = float(getattr(shared, "gamespeed", 1.0))
         seconds = dt / max(1e-9, gs)
 
-        # (1) base income (+Resolution)
+        # (1) Base income (+Resolution)
         unlocked = v.current_payload_unlocked()
-        base_income = float(v.stats.get("income", {}).get("base") or v._payload_base_income())
+        base_income = float(v.stats.get("income", {}).get("base") or v._payload_base_income() or 0.0)
         if int(T_UP.RESOLUTION1) in unlocked:
             base_income += 100.0
         global_mult  = float(getattr(agency, "global_cash_multiplier", 1.0))
@@ -174,16 +198,16 @@ class SpaceTelescope(PayloadBehavior):
         # (2) RCS pointing (no fuel)
         self._apply_rcs_pointing(seconds)
 
-        # (3) always compute sight (even if not controlled)
+        # (3) Compute current sight list
         v.telescope_targets_in_sight.clear()
         candidates = list(v._iter_planets_in_same_system()) or []
         if not candidates:
-            # nothing to scan, also clear last ids so a later control session will push
+            # reset push state when nothing to show
             self._last_ids = None
             self._sight_push_accum = 0.0
             return
 
-        # FOV with upgrades (your latest spec uses degree bumps)
+        # FOV upgrades
         fov_deg = float(v.telescope_fov_deg)
         if int(T_UP.FOCUS1) in unlocked:
             fov_deg += 7.0
@@ -191,7 +215,7 @@ class SpaceTelescope(PayloadBehavior):
             fov_deg += 13.0
         half_fov = max(0.0, fov_deg * 0.5)
 
-        # Range with upgrades
+        # Range upgrades
         range_km = float(v.telescope_range_km)
         if int(T_UP.EXPOSURE1) in unlocked:
             range_km += float(AU_KM)
@@ -202,16 +226,30 @@ class SpaceTelescope(PayloadBehavior):
         aim_deg = -float(v.rotation)
 
         for obj in candidates:
-            dx, dy = obj.position[0] - rx, obj.position[1] - ry
-            dist_km = math.hypot(dx, dy)
-            if dist_km > range_km:
+            try:
+                dx = float(obj.position[0]) - float(rx)
+                dy = float(obj.position[1]) - float(ry)
+                dist_km = math.hypot(dx, dy)
+                if dist_km > range_km:
+                    continue
+                to_target_deg = math.degrees(math.atan2(dy, dx))
+                if abs(shortest_delta_deg(aim_deg, to_target_deg)) <= half_fov:
+                    v.telescope_targets_in_sight.append(obj)
+            except Exception:
                 continue
-            to_target_deg = math.degrees(math.atan2(dy, dx))
-            delta = shortest_delta_deg(aim_deg, to_target_deg)
-            if abs(delta) <= half_fov:
-                v.telescope_targets_in_sight.append(obj)
 
-        # (4) PLANET_IMAGE: +$100 per target currently in sight (scaled like other income)
+        # (3b) DISCOVERY: mark all sighted bodies as discovered for this agency
+        if hasattr(agency, "discover_planet") and callable(getattr(agency, "discover_planet")):
+            for o in v.telescope_targets_in_sight:
+                if isinstance(o, Planet):
+                    pid = int(getattr(o, "object_id", 0) or 0)
+                    if pid > 0:
+                        try:
+                            agency.discover_planet(pid)
+                        except Exception:
+                            pass
+
+        # (4) PLANET_IMAGE bonus: +$100 per target currently in sight (scaled)
         if hasattr(T_UP, "PLANET_IMAGE") and int(T_UP.PLANET_IMAGE) in unlocked:
             n = len(v.telescope_targets_in_sight)
             if n > 0:
@@ -219,7 +257,7 @@ class SpaceTelescope(PayloadBehavior):
                 agency.distribute_money(bonus)
                 v.credit_income(bonus)
 
-        # (5) send sight only if controlled; throttle & only on change
+        # (5) Push sight to controller only when controlled, throttled, and on change
         controlled = bool(int(getattr(v, "controlled_by", 0) or 0))
         ids_now = tuple(sorted(int(getattr(o, "object_id", 0)) for o in v.telescope_targets_in_sight))
         if controlled:
@@ -230,7 +268,7 @@ class SpaceTelescope(PayloadBehavior):
                 self._sight_push_accum = 0.0
                 self._send_sight_to_controller()
         else:
-            # reset so first control push sends immediately
+            # reset so the next time a player takes control, it pushes immediately
             self._last_ids = None
             self._sight_push_accum = 0.0
 
@@ -244,6 +282,20 @@ class Probe(PayloadBehavior):
     AACS:     ×2 income if pointing within 5° of home planet.
     """
 
+    def _maybe_discover(self, body):
+        """Discover any body we meaningfully observed/inspected."""
+        if not isinstance(body, Planet):
+            return False
+        v = self.vessel
+        shared = getattr(v, "shared", None)
+        if not shared:
+            return False
+        agency = shared.agencies.get(v.agency_id)
+        if not agency:
+            return False
+        pid = int(getattr(body, "object_id", 0) or 0)
+        return agency.discover_planet(pid) if pid > 0 else False
+    
     def on_attach(self):
             """When the probe becomes active (stage==0), immediately inspect its home planet once."""
             if getattr(self, "_did_initial_inspect", False):
@@ -294,15 +346,16 @@ class Probe(PayloadBehavior):
         if not isinstance(src, Planet):
             return
 
-        # Do not count moons as 'planets' for probes.
+        # NEW: discovery is independent of 'visited' (so moons get discovered too)
+        self._maybe_discover(src)
+
+        # Keep your *visited* rules planet-only (skip moons for income):
         if bool(getattr(src, "is_moon", False)):
             return
 
-        # distance to current strongest gravity source
         dx = float(v.position[0]) - float(src.position[0])
         dy = float(v.position[1]) - float(src.position[1])
         dist_km = math.hypot(dx, dy)
-
         R = float(getattr(src, "radius_km", 0.0))
         if R <= 0.0:
             return
@@ -315,7 +368,6 @@ class Probe(PayloadBehavior):
         if pid <= 0:
             return
 
-        # first time close enough: record + notify
         if pid not in v.planets_visited:
             v.planets_visited.append(pid)
             self._notify_agency_visit(src)
@@ -495,3 +547,177 @@ class SolarOrbiter(PayloadBehavior):
         if payout > 0.0:
             agency.distribute_money(payout)
             v.credit_income(payout)
+
+
+class LunarLander:
+    """
+    - Trains astronauts onboard each real second (xp rate via attributes["training-xp-rate"], default 0.1).
+    - Generates $10 * sum(levels) per real second.
+    - Awards +200 XP to each astronaut when landing on a *moon* if the vessel's
+      previous landing body was different (trip-based, prevents farm by bounce-landing).
+    """
+    def __init__(self, vessel):
+        self.vessel = vessel
+        self.payload_id = int(getattr(vessel, "payload", 0))
+
+    def on_attach(self):
+        pass
+
+    def on_detach(self):
+        pass
+
+    def on_unland(self, planet):
+        pass
+
+    def on_land(self, planet, prev_body_id=None):
+        v = self.vessel
+        shared = getattr(v, "shared", None)
+        if not (planet and shared):
+            return
+
+        # Moved-from-Vessel mission hook (auto-build if declared on a component)
+        self._maybe_build_on_land(planet)
+
+        # Trip-based XP: only when landing on a moon and previous landing was a different body
+        try:
+            is_moon = bool(getattr(planet, "is_moon", False))
+            cur_id  = int(getattr(planet, "object_id", 0) or 0)
+            prev_id = int(prev_body_id) if prev_body_id is not None else None
+        except Exception:
+            is_moon, cur_id, prev_id = False, 0, None
+
+        if is_moon and cur_id > 0 and (prev_id is None or prev_id != cur_id):
+            self._award_trip_xp(amount=200.0)
+            self._notify_agency(f"{v.name}: astronauts gained +200 XP for completing a trip and landing on {getattr(planet,'name','a moon')}!")
+
+    def on_tick(self, dt: float):
+        v = self.vessel
+        if v.stage != 0:
+            return
+        shared = getattr(v, "shared", None)
+        if not shared:
+            return
+
+        gs = float(getattr(shared, "gamespeed", 1.0))
+        real_dt = dt / max(1e-9, gs)
+
+        astronauts = getattr(shared, "astronauts", None)
+        if astronauts is None:
+            setattr(shared, "astronauts", {})
+            astronauts = shared.astronauts
+
+        try:
+            xp_rate = float(v._payload_attr("training-xp-rate", 0.1))
+        except Exception:
+            xp_rate = 0.1
+
+        total_levels = 0
+        for aid in getattr(v, "astronauts_onboard", []):
+            astro = astronauts.get(int(aid))
+            if not astro:
+                continue
+            if hasattr(astro, "gain_exp"):
+                astro.gain_exp(xp_rate * real_dt)
+            lvl = int(getattr(astro, "level", 1))
+            total_levels += max(1, lvl)
+
+        if total_levels > 0:
+            v.credit_income(10.0 * total_levels * real_dt)
+
+    # ---------- helpers ----------
+    def _award_trip_xp(self, amount: float):
+        v = self.vessel
+        shared = getattr(v, "shared", None)
+        if not shared:
+            return
+        astronauts = getattr(shared, "astronauts", None) or {}
+        for aid in getattr(v, "astronauts_onboard", []):
+            a = astronauts.get(int(aid))
+            if a and hasattr(a, "gain_exp"):
+                a.gain_exp(float(amount))
+
+    def _notify_agency(self, msg: str):
+        v = self.vessel
+        shared = getattr(v, "shared", None)
+        if not shared:
+            return
+        try:
+            udp = getattr(shared, "udp_server", None)
+            if not udp:
+                return
+            agency = getattr(shared, "agencies", {}).get(int(v.agency_id))
+            if not agency:
+                return
+            loop = getattr(shared, "main_loop", None)
+            if loop and loop.is_running():
+                import asyncio
+                asyncio.run_coroutine_threadsafe(udp.notify_agency(agency.id64, 2, msg), loop)
+        except Exception as e:
+            print(f"⚠️ notify_agency schedule failed: {e}")
+
+    def _maybe_build_on_land(self, planet):
+        v = self.vessel
+        if getattr(v, "_build_on_land_fired", False):
+            return
+        if not planet or not getattr(v, "shared", None):
+            return
+
+        planet_name = str(getattr(planet, "name", "")).strip()
+        if not planet_name:
+            return
+
+        target = None
+        for comp in v.components:
+            cd = (v.shared.component_data.get(comp.id, {}) or {})
+            attrs = (cd.get("attributes", {}) or {})
+            bol = attrs.get("build-on-land")
+            if isinstance(bol, (list, tuple)) and len(bol) == 2:
+                target = (str(bol[0]).strip(), int(bol[1]))
+                break
+        if not target:
+            return
+
+        wanted_name, building_type = target
+        if planet_name.lower() != wanted_name.lower():
+            return
+
+        agency = v.shared.agencies.get(v.agency_id)
+        if not agency:
+            return
+
+        base_id = int(getattr(planet, "object_id", 0))
+        if base_id == 0:
+            return
+
+        for b in agency.bases_to_buildings.get(base_id, []):
+            if int(getattr(b, "type", -1)) == building_type:
+                v._build_on_land_fired = True
+                return
+
+        try:
+            from buildings import Building, BuildingType
+            angle = float(getattr(v, "landed_angle_offset", 0.0))
+            new_building = Building(BuildingType(int(building_type)), v.shared, angle, base_id, agency)
+            new_building.constructed = True
+            agency.add_building_to_base(base_id, new_building)
+
+            if hasattr(agency, "unlock_building_type") and callable(agency.unlock_building_type):
+                agency.unlock_building_type(int(building_type))
+            else:
+                if not hasattr(agency, "unlocked_buildings") or agency.unlocked_buildings is None:
+                    agency.unlocked_buildings = set()
+                agency.unlocked_buildings.add(int(building_type))
+
+            if hasattr(agency, "update_attributes"):
+                agency.update_attributes()
+
+            udp = getattr(v.shared, "udp_server", None)
+            if udp:
+                bname = (v.shared.buildings_by_id.get(int(building_type), {}) or {}).get("name", f"Building {building_type}")
+                self._notify_agency(f"{agency.name} established {bname} on {planet_name} (mission auto-build)")
+
+            print(f"✅ Auto-built building {building_type} on {planet_name} for agency {agency.id64}")
+        except Exception as e:
+            print(f"⚠️ build-on-land mission hook failed: {e}")
+
+        v._build_on_land_fired = True
