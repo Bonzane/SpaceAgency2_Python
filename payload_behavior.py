@@ -8,7 +8,7 @@ from vessels import *
 from packet_types import DataGramPacketType
 import struct
 from gameobjects import Planet
-
+import random
 
 
 
@@ -112,7 +112,6 @@ class CommsSatellite(PayloadBehavior):
 class SpaceTelescope(PayloadBehavior):
 
     def _discover_targets(self, objs):
-        """Mark planets in sight as discovered for this vessel's agency."""
         v = self.vessel
         shared = getattr(v, "shared", None)
         if not shared:
@@ -120,14 +119,20 @@ class SpaceTelescope(PayloadBehavior):
         agency = shared.agencies.get(v.agency_id)
         if not agency:
             return 0
+
         new = 0
         for o in objs:
-            if not isinstance(o, Planet):
+            if not self._is_discoverable(o):   # ← skip moons
                 continue
             pid = int(getattr(o, "object_id", 0) or 0)
             if pid > 0 and agency.discover_planet(pid):
                 new += 1
         return new
+
+    
+    def _is_discoverable(self, o) -> bool:
+        # Only discover *planets* that are not moons
+        return isinstance(o, Planet) and not bool(getattr(o, "is_moon", False))
 
 
     def _apply_rcs_pointing(self, seconds: float):
@@ -200,7 +205,10 @@ class SpaceTelescope(PayloadBehavior):
 
         # (3) Compute current sight list
         v.telescope_targets_in_sight.clear()
-        candidates = list(v._iter_planets_in_same_system()) or []
+        candidates = [
+            o for o in (list(v._iter_planets_in_same_system()) or [])
+            if isinstance(o, Planet) and not bool(getattr(o, "is_moon", False))
+        ]
         if not candidates:
             # reset push state when nothing to show
             self._last_ids = None
@@ -221,6 +229,8 @@ class SpaceTelescope(PayloadBehavior):
             range_km += float(AU_KM)
         if hasattr(T_UP, "ZOOM1") and int(T_UP.ZOOM1) in unlocked:
             range_km += float(AU_KM) * 3.5
+        if hasattr(T_UP, "ZOOM2") and int(T_UP.ZOOM2) in unlocked:
+            range_km += float(AU_KM) * 10.0
 
         rx, ry = v.position
         aim_deg = -float(v.rotation)
@@ -238,16 +248,18 @@ class SpaceTelescope(PayloadBehavior):
             except Exception:
                 continue
 
-        # (3b) DISCOVERY: mark all sighted bodies as discovered for this agency
+        # (3b) DISCOVERY: mark all sighted *non-moon* bodies as discovered
         if hasattr(agency, "discover_planet") and callable(getattr(agency, "discover_planet")):
             for o in v.telescope_targets_in_sight:
-                if isinstance(o, Planet):
-                    pid = int(getattr(o, "object_id", 0) or 0)
-                    if pid > 0:
-                        try:
-                            agency.discover_planet(pid)
-                        except Exception:
-                            pass
+                if not self._is_discoverable(o):   # ← skip moons
+                    continue
+                pid = int(getattr(o, "object_id", 0) or 0)
+                if pid > 0:
+                    try:
+                        agency.discover_planet(pid)
+                    except Exception:
+                        pass
+
 
         # (4) PLANET_IMAGE bonus: +$100 per target currently in sight (scaled)
         if hasattr(T_UP, "PLANET_IMAGE") and int(T_UP.PLANET_IMAGE) in unlocked:
@@ -721,3 +733,334 @@ class LunarLander:
             print(f"⚠️ build-on-land mission hook failed: {e}")
 
         v._build_on_land_fired = True
+
+
+
+class SpaceShuttle:
+    """
+    - Trains astronauts onboard each real second (xp rate via attributes["training-xp-rate"], default 0.1).
+    - Generates $10 * sum(levels) per real second.
+    - Awards +200 XP to each astronaut when landing on a *moon* if the vessel's
+      previous landing body was different (trip-based, prevents farm by bounce-landing).
+    """
+    def __init__(self, vessel):
+        self.vessel = vessel
+        self.payload_id = int(getattr(vessel, "payload", 0))
+
+    def on_attach(self):
+        pass
+
+    def on_detach(self):
+        pass
+
+    def on_unland(self, planet):
+        pass
+
+    def on_land(self, planet, prev_body_id=None):
+        v = self.vessel
+        shared = getattr(v, "shared", None)
+        if not (planet and shared):
+            return
+
+        # Moved-from-Vessel mission hook (auto-build if declared on a component)
+        self._maybe_build_on_land(planet)
+
+        # Trip-based XP: only when landing on a moon and previous landing was a different body
+        try:
+            is_moon = bool(getattr(planet, "is_moon", False))
+            cur_id  = int(getattr(planet, "object_id", 0) or 0)
+            prev_id = int(prev_body_id) if prev_body_id is not None else None
+        except Exception:
+            is_moon, cur_id, prev_id = False, 0, None
+
+        if is_moon and cur_id > 0 and (prev_id is None or prev_id != cur_id):
+            self._award_trip_xp(amount=200.0)
+            self._notify_agency(f"{v.name}: astronauts gained +200 XP for completing a trip and landing on {getattr(planet,'name','a moon')}!")
+
+    def on_tick(self, dt: float):
+        v = self.vessel
+        if v.stage != 0:
+            return
+        shared = getattr(v, "shared", None)
+        if not shared:
+            return
+
+        gs = float(getattr(shared, "gamespeed", 1.0))
+        real_dt = dt / max(1e-9, gs)
+
+        astronauts = getattr(shared, "astronauts", None)
+        if astronauts is None:
+            setattr(shared, "astronauts", {})
+            astronauts = shared.astronauts
+
+        try:
+            xp_rate = float(v._payload_attr("training-xp-rate", 0.1))
+        except Exception:
+            xp_rate = 0.1
+
+        total_levels = 0
+        for aid in getattr(v, "astronauts_onboard", []):
+            astro = astronauts.get(int(aid))
+            if not astro:
+                continue
+            if hasattr(astro, "gain_exp"):
+                astro.gain_exp(xp_rate * real_dt)
+            lvl = int(getattr(astro, "level", 1))
+            total_levels += max(1, lvl)
+
+        if total_levels > 0:
+            v.credit_income(10.0 * total_levels * real_dt)
+
+    # ---------- helpers ----------
+    def _award_trip_xp(self, amount: float):
+        v = self.vessel
+        shared = getattr(v, "shared", None)
+        if not shared:
+            return
+        astronauts = getattr(shared, "astronauts", None) or {}
+        for aid in getattr(v, "astronauts_onboard", []):
+            a = astronauts.get(int(aid))
+            if a and hasattr(a, "gain_exp"):
+                a.gain_exp(float(amount))
+
+    def _notify_agency(self, msg: str):
+        v = self.vessel
+        shared = getattr(v, "shared", None)
+        if not shared:
+            return
+        try:
+            udp = getattr(shared, "udp_server", None)
+            if not udp:
+                return
+            agency = getattr(shared, "agencies", {}).get(int(v.agency_id))
+            if not agency:
+                return
+            loop = getattr(shared, "main_loop", None)
+            if loop and loop.is_running():
+                import asyncio
+                asyncio.run_coroutine_threadsafe(udp.notify_agency(agency.id64, 2, msg), loop)
+        except Exception as e:
+            print(f"⚠️ notify_agency schedule failed: {e}")
+
+    def _maybe_build_on_land(self, planet):
+        v = self.vessel
+        if getattr(v, "_build_on_land_fired", False):
+            return
+        if not planet or not getattr(v, "shared", None):
+            return
+
+        planet_name = str(getattr(planet, "name", "")).strip()
+        if not planet_name:
+            return
+
+        target = None
+        for comp in v.components:
+            cd = (v.shared.component_data.get(comp.id, {}) or {})
+            attrs = (cd.get("attributes", {}) or {})
+            bol = attrs.get("build-on-land")
+            if isinstance(bol, (list, tuple)) and len(bol) == 2:
+                target = (str(bol[0]).strip(), int(bol[1]))
+                break
+        if not target:
+            return
+
+        wanted_name, building_type = target
+        if planet_name.lower() != wanted_name.lower():
+            return
+
+        agency = v.shared.agencies.get(v.agency_id)
+        if not agency:
+            return
+
+        base_id = int(getattr(planet, "object_id", 0))
+        if base_id == 0:
+            return
+
+        for b in agency.bases_to_buildings.get(base_id, []):
+            if int(getattr(b, "type", -1)) == building_type:
+                v._build_on_land_fired = True
+                return
+
+        try:
+            from buildings import Building, BuildingType
+            angle = float(getattr(v, "landed_angle_offset", 0.0))
+            new_building = Building(BuildingType(int(building_type)), v.shared, angle, base_id, agency)
+            new_building.constructed = True
+            agency.add_building_to_base(base_id, new_building)
+
+            if hasattr(agency, "unlock_building_type") and callable(agency.unlock_building_type):
+                agency.unlock_building_type(int(building_type))
+            else:
+                if not hasattr(agency, "unlocked_buildings") or agency.unlocked_buildings is None:
+                    agency.unlocked_buildings = set()
+                agency.unlocked_buildings.add(int(building_type))
+
+            if hasattr(agency, "update_attributes"):
+                agency.update_attributes()
+
+            udp = getattr(v.shared, "udp_server", None)
+            if udp:
+                bname = (v.shared.buildings_by_id.get(int(building_type), {}) or {}).get("name", f"Building {building_type}")
+                self._notify_agency(f"{agency.name} established {bname} on {planet_name} (mission auto-build)")
+
+            print(f"✅ Auto-built building {building_type} on {planet_name} for agency {agency.id64}")
+        except Exception as e:
+            print(f"⚠️ build-on-land mission hook failed: {e}")
+
+        v._build_on_land_fired = True
+
+
+class Rover(PayloadBehavior):
+    """
+    While landed, periodically (≈1Hz real time) roll for a mined resource using the
+    planet's resource_map weights, and add +1 to the rover's cargo, clamped by
+    vessel.cargo_capacity. Sends a CARGO_STATE snapshot to the controller on change.
+    """
+    def __init__(self, vessel):
+        super().__init__(vessel)
+        self._accum = 0.0
+        self._notified_full = False  # avoid spamming a "full" notice
+
+    def on_attach(self):
+        # ensure cargo dict exists
+        if not hasattr(self.vessel, "cargo") or self.vessel.cargo is None:
+            self.vessel.cargo = {}
+
+    def on_tick(self, dt: float):
+        v = self.vessel
+        # must be active payload, actually landed, and have a planet
+        if v.stage != 0 or not bool(getattr(v, "landed", False)):
+            self._accum = 0.0
+            self._notified_full = False
+            return
+        planet = getattr(v, "home_planet", None)
+        if planet is None:
+            # fallback: if you track landed planet id separately
+            pid = int(getattr(v, "launchpad_planet_id", 0) or 0)
+            if pid and getattr(v, "home_chunk", None):
+                planet = v.home_chunk.get_object_by_id(pid)
+
+        if planet is None:
+            print("No planet for rover")
+            return
+
+        # convert to real seconds
+        seconds = dt
+        self._accum += seconds
+        if self._accum < 10.0:
+            return
+        # run roughly once per second, even if we accumulated multiple seconds
+        self._accum -= 10.0
+
+        # 1) get the planet's resource map
+        resource_map = getattr(planet, "resource_map", {}) or {}
+        if not resource_map:
+            #print("No recource map for rover")
+            return
+
+        # 2) check cargo capacity
+        cargo = getattr(v, "cargo", {}) or {}
+        cap   = int(max(0, getattr(v, "cargo_capacity", 0)))
+        used  = sum(int(max(0, a)) for a in cargo.values())
+        if cap > 0 and used >= cap:
+            # optional: one-time notification to controller
+            return
+
+        # 3) emulate Mining Rig odds (50 per 'level' ~= 5% at level 1) once per sec
+        #    If you want rover-specific tuning, add a rover_level or attribute.
+        mining_odds = random.randrange(0, 2000)
+        if mining_odds <= 1:
+            # 4) weighted choice from resource_map
+            try:
+                resources = list(resource_map.keys())
+                weights   = [float(resource_map[r]) for r in resources]
+                mined_resource = random.choices(resources, weights=weights, k=1)[0]
+                rid = int(mined_resource)
+            except Exception:
+                return
+
+            # 5) add +1 to cargo, capped by capacity
+            add_amt = 1
+            if cap > 0:
+                add_amt = min(add_amt, max(0, cap - used))
+            if add_amt <= 0:
+                self._notify_controller_once("Rover cargo is full.")
+                return
+
+            cargo[rid] = int(cargo.get(rid, 0)) + add_amt
+            v.cargo = cargo  # keep reference consistent
+
+            # 6) push a CARGO_STATE snapshot to the controller (nice but optional)
+            self._send_cargo_state(planet_id=int(getattr(planet, "object_id", 0)))
+            self._notified_full = False  # cargo changed; allow future full notice again
+
+            if not v.landed or not getattr(v, "home_planet", None):
+                return
+
+            # Real seconds, not sim seconds
+            gs = float(getattr(v.shared, "gamespeed", 1.0))
+            seconds = dt / max(1e-9, gs)
+
+        # 1) Resolve desired speed: deg/s wins; else convert km/s → deg/s; else default.
+        try:
+            km_per_sec = float(v._payload_attr("rover-km-per-sec", 1.0))
+        except Exception:
+            km_per_sec = 1.0
+        km_per_sec = km_per_sec * 0.1
+        if not math.isnan(km_per_sec):
+            R = float(getattr(v.home_planet, "radius_km", 1000.0))
+            circ = 2.0 * math.pi * max(1e-6, R)
+            deg_per_sec = (km_per_sec / circ) * 360.0
+        else:
+            # default ~0.5°/min ≈ 0.008333°/s
+            deg_per_sec = 0.008333
+
+        # 2) Optional: allow player to flip direction with attitude keys while landed
+        direction = 1.0
+        delta_deg = deg_per_sec * direction * seconds
+
+        # 3) Apply and wrap (use your existing wrap helper if you prefer)
+        try:
+            from utils import wrap_deg
+            v.landed_angle_offset = wrap_deg(v.landed_angle_offset + delta_deg)
+        except Exception:
+            v.landed_angle_offset = (v.landed_angle_offset + delta_deg) % 360.0
+
+    # ---------- helpers ----------
+    def _send_cargo_state(self, planet_id: int):
+        try:
+            shared = getattr(self.vessel, "shared", None)
+            udp    = getattr(shared, "udp_server", None)
+            if not (shared and udp and getattr(udp, "transport", None)):
+                return
+            pkt = udp.build_cargo_state_packet(self.vessel, planet_id)
+            # send to controller if any; else skip
+            pid = int(getattr(self.vessel, "controlled_by", 0) or 0)
+            if pid:
+                player = shared.players.get(pid)
+                sess = getattr(player, "session", None)
+                if sess and sess.alive and getattr(sess, "udp_port", None):
+                    udp._udp_send_to_session(sess, pkt)
+        except Exception:
+            pass
+
+    def _notify_controller_once(self, message: str):
+        if self._notified_full:
+            return
+        try:
+            shared = getattr(self.vessel, "shared", None)
+            udp    = getattr(shared, "udp_server", None)
+            if not (shared and udp and getattr(udp, "transport", None)):
+                return
+            pid = int(getattr(self.vessel, "controlled_by", 0) or 0)
+            if not pid:
+                return
+            player = shared.players.get(pid)
+            sess = getattr(player, "session", None)
+            if not (sess and sess.alive and getattr(sess, "udp_port", None)):
+                return
+            pkt = udp.build_notification_packet(1, message)
+            udp._udp_send_to_session(sess, pkt)
+            self._notified_full = True
+        except Exception:
+            pass

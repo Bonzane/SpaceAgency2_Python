@@ -13,6 +13,7 @@ from vessels import Vessel, VesselState
 from regions import maybe_update_vessel_region
 from utils import ambient_temp_simple
 import os
+from vessel_components import Components
 
 
 def is_planet(o):
@@ -292,6 +293,115 @@ class Chunk:
                     float(pos_np_updated[i, 1]),
                 )
 
+        # --- 2b) nuclear blast fields (sustained acceleration; vectorized) ---
+        # Build a small registry of active nuclear emitters from existing jett_idx.
+        emitters = []
+        if jett_idx:
+            for i in jett_idx:
+                jo = physics_objects[i]
+                # Only nuclear jettisons
+                if int(getattr(jo, "component_id", 0) or 0) != int(getattr(Components, "NUCLEAR_JETTISON", -1)):
+                    continue
+
+                age = float(getattr(jo, "age", 0.0))
+                life = max(1e-6, float(getattr(jo, "lifetime", 1.0)))
+
+                # Start at ~1/5 lifetime, last for ~1/2 lifetime (tweakable per object).
+                start = float(getattr(jo, "blast_start_age", 0.066667 * life))
+                duration = float(getattr(jo, "blast_duration", 0.10 * life))
+                t_rel = age - start
+                if t_rel < 0.0 or t_rel > duration:
+                    continue  # not active this tick
+
+                strength = self._blast_envelope(t_rel, duration)   # 0..1 smooth window
+                if strength <= 0.0:
+                    continue
+
+                if not getattr(jo, "_blast_announced", False):
+                    try:
+                        pkt = bytearray()
+                        pkt.append(DataGramPacketType.SIGNAL_DESTROY)  # existing signal type
+                        pkt += struct.pack('<Q', int(getattr(jo, "object_id", 0)))  # only the object id
+                        for player in self.manager.shared.players.values():
+                            if player.galaxy == self.galaxy and player.system == self.system:
+                                session = player.session
+                                if session and session.udp_port and session.alive:
+                                    addr = (session.remote_ip, session.udp_port)
+                                    self.manager.shared.udp_server.transport.sendto(pkt, addr)
+                    except Exception as e:
+                        print(f"⚠️ Nuclear blast announce failed: {e}")
+                    setattr(jo, "_blast_announced", True)
+
+                # Params (allow per-object overrides)
+                R = float(getattr(jo, "blast_radius_km", 150_000.0))   # radius (km)
+                a0 = float(getattr(jo, "blast_peak_acc_km_s2", 20.0))   # peak accel at center (km/s^2)
+                falloff = getattr(jo, "blast_falloff", "smooth")       # 'smooth' or 'inverse_square'
+
+                emitters.append((i, R, a0, strength, falloff))
+
+        if emitters:
+            # Targets = all non-planet physics objects (includes vessels, asteroids, jettisons)
+            def _is_planet_like(o):
+                return is_planet(o) or getattr(o, "object_type", None) == ObjectType.SUN
+
+            target_idx = [i for i, o in enumerate(physics_objects) if not _is_planet_like(o)]
+            if target_idx:
+                # Fresh positions/velocities AFTER earlier updates
+                pos2 = np.array([physics_objects[i].position for i in target_idx], dtype=np.float64)
+                vel2 = np.array([physics_objects[i].velocity for i in target_idx], dtype=np.float64)
+
+                # Apply each emitter in turn (usually 0–1, so this is cheap)
+                for i_em, R, a0, strength, falloff in emitters:
+                    nuke = physics_objects[i_em]
+                    nuke_agency = int(getattr(nuke, "agency_id", 0))
+
+                    cx, cy = nuke.position
+                    d = pos2 - np.array([cx, cy], dtype=np.float64)
+                    dist = np.hypot(d[:, 0], d[:, 1])
+
+                    # Base radius mask
+                    mask = (dist > 0.0) & (dist <= R)
+
+                    # Agency filter: keep only (non-vessels) OR (same-agency vessels)
+                    same_agency_mask = np.ones(mask.shape, dtype=bool)
+                    # Build “is vessel” and “agency id” lists once outside this inner loop if you want micro-optimization
+                    is_vessel_flags = np.array([isinstance(physics_objects[i], Vessel) for i in target_idx], dtype=bool)
+                    target_agency_ids = np.array([int(getattr(physics_objects[i], "agency_id", -1)) for i in target_idx], dtype=int)
+
+                    # For vessels: require same agency
+                    vessel_bad = is_vessel_flags & (target_agency_ids != nuke_agency)
+                    same_agency_mask[vessel_bad] = False
+
+                    mask &= same_agency_mask
+                    if not np.any(mask):
+                        continue
+
+
+
+                    u = np.zeros_like(d)
+                    u[mask, 0] = d[mask, 0] / dist[mask]
+                    u[mask, 1] = d[mask, 1] / dist[mask]
+
+                    if falloff == "inverse_square":
+                        soft = 0.05 * R
+                        a_mag = np.clip(a0 * (R * R) / ((dist + soft) ** 2), 0.0, a0)
+                    else:
+                        # smooth quadratic in radius
+                        t = np.clip(1.0 - (dist / R), 0.0, 1.0)
+                        a_mag = a0 * (t * t)
+
+                    a_mag *= strength  # envelope over time
+
+                    # Δv = a · dt in outward direction
+                    dv = (a_mag * dt)[:, None] * u
+                    vel2 += dv
+
+                # Write velocities back to objects
+                for k, i_obj in enumerate(target_idx):
+                    ox, oy = physics_objects[i_obj].velocity
+                    physics_objects[i_obj].velocity = (float(vel2[k, 0]), float(vel2[k, 1]))
+
+
         # 3) ambient temps
         for obj in physics_objects:
             ox, oy = getattr(obj, "position", (0.0, 0.0))
@@ -349,6 +459,69 @@ class Chunk:
 
         for obj in to_remove:
             self.remove_object(obj)
+
+    def _nuke_explode(self, nuke_obj, *, radius_km=150_000.0, peak_dv_km_s=25.0, falloff="smooth"):
+        """
+        Apply an outward impulse to nearby non-planet PhysicsObjects.
+        - radius_km: blast radius (km)
+        - peak_dv_km_s: max Δv at the epicenter (km/s)
+        - falloff: 'smooth' (quadratic) or 'inverse_square'
+        """
+        cx, cy = getattr(nuke_obj, "position", (0.0, 0.0))
+        affected = 0
+
+        def is_planet_like(o):
+            # your is_planet() check already handles planets; also exclude the sun explicitly
+            if is_planet(o):
+                return True
+            return getattr(o, "object_type", None) == ObjectType.SUN
+
+        for obj in list(self.objects):
+            if obj is nuke_obj:
+                continue
+            if not hasattr(obj, "mass"):             # skip non-physics
+                continue
+            if is_planet_like(obj):                  # do not move planets/stars
+                continue
+
+            ox, oy = getattr(obj, "position", (0.0, 0.0))
+            dx, dy = ox - cx, oy - cy
+            dist = math.hypot(dx, dy)
+
+            if dist > radius_km or dist <= 0.0:
+                continue
+
+            # Outward unit direction
+            ux, uy = dx / dist, dy / dist
+
+            # Choose falloff
+            if falloff == "inverse_square":
+                # Soften near 0; normalized so dv <= peak_dv_km_s
+                soft = 0.05 * radius_km
+                dv = peak_dv_km_s * (radius_km**2) / ((dist + soft) ** 2)
+                dv = min(dv, peak_dv_km_s)
+            else:
+                # Smooth quadratic: dv = peak * (1 - r/R)^2
+                t = max(0.0, 1.0 - dist / radius_km)
+                dv = peak_dv_km_s * (t * t)
+
+            # Apply Δv
+            vx, vy = getattr(obj, "velocity", (0.0, 0.0))
+            obj.velocity = (vx + ux * dv, vy + uy * dv)
+            affected += 1
+
+        print(f"💥 Nuclear detonation at ({cx:.1f},{cy:.1f}) km: affected {affected} objects "
+            f"(R={radius_km:.0f} km, peak Δv={peak_dv_km_s:.1f} km/s)")
+
+
+    def _blast_envelope(self, t_rel: float, duration: float) -> float:
+        """0..1 smooth Hann window (rise then fall) over [0, duration]."""
+        if t_rel <= 0.0 or t_rel >= duration:
+            return 0.0
+        # Hann window: 0.5 * (1 - cos(2π t/T)), nice smooth start/end
+        import math
+        return 0.5 * (1.0 - math.cos(2.0 * math.pi * (t_rel / duration)))
+
 
     def serialize_chunk(self):
         print(f"💾 Serializing chunk {self.galaxy}:{self.system} with {len(self.objects)} objects")

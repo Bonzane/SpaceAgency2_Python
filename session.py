@@ -636,7 +636,7 @@ class Session:
                 from buildings import BuildingType
                 if building_type == int(getattr(BuildingType, "CHEMICAL_LAB", -1)):
                     facility_key = "Chem Lab"
-                elif hasattr(BuildingType, "COLLIDER") and building_type == int(BuildingType.COLLIDER):
+                elif building_type == int(getattr(BuildingType, "PARTICLE_COLLIDER", -1)):
                     facility_key = "Collider"
             except Exception:
                 pass

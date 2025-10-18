@@ -16,6 +16,7 @@ class BuildingType(IntEnum):
     MOON_HQ = 10
     DATA_CENTER = 11
     REFUELING_STATION = 12
+    MARS_HQ = 13
 
 
 class Building:

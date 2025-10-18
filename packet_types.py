@@ -50,6 +50,7 @@ class DataGramPacketType(IntEnum):
     CARGO_ADD = 0x12
     CARGO_REMOVE = 0x13
     CARGO_STATE = 0x14
+    SIGNAL_DESTROY = 0x15
 
 
 class ChatMessage(IntEnum):

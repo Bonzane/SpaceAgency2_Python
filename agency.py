@@ -42,6 +42,7 @@ class Agency:
         self.attributes = copy.deepcopy(self.shared.agency_default_attributes)
         self.discovered_planets.add(EARTH_ID)
         self.discovered_planets.add(0)
+        self.discovered_planets.add(3)
 
     def discover_planet(self, planet_id: int, notify: bool = True) -> bool:
         """Mark a planet as discovered for this agency (no base required)

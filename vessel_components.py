@@ -33,3 +33,4 @@ class Components(IntEnum):
     STRAP_ON_BOOSTER = 29
     ION_DRIVE = 30
     CARGO_HOLD = 31
+    NUCLEAR_JETTISON = 32

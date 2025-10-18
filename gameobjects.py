@@ -2,7 +2,7 @@ from enum import Enum, IntEnum, auto
 import pickle
 from dataclasses import dataclass, field
 import itertools
-from typing import Optional, Tuple, Union, Dict, List
+from typing import Optional, Tuple, Union, Dict, List, Mapping
 import numpy as np
 import math
 from physics import G
@@ -12,6 +12,7 @@ from resources import Resource
 import random
 from pathlib import Path
 import os
+import json
 
 ID_SEQ_FILENAME = "object_id.seq"
 
@@ -180,7 +181,8 @@ class JettisonedComponent(PhysicsObject):
         mass: float,
         radius_km: float,
         component_index: int,
-        component_id: int = 0
+        component_id: int = 0,
+        agency_id: int = 0
     ):
         super().__init__(
             object_type=ObjectType.JETTISONED_COMPONENT,
@@ -192,6 +194,7 @@ class JettisonedComponent(PhysicsObject):
 
         self.component_index = component_index
         self.component_id = component_id
+        self.agency_id = int(agency_id)
         self.age = 0.0
         # make lifetime configurable for debugging
         self.lifetime = 400.0
@@ -248,6 +251,8 @@ class Planet(PhysicsObject):
     is_star: bool = False
     is_moon: bool = False
 
+
+
     def set_regions(self, regions: Dict[int, float]) -> None:
         self.regions_km = dict(regions)
         items: List[Tuple[int, float]] = sorted(self.regions_km.items(), key=lambda kv: kv[1])  # small→large
@@ -267,42 +272,196 @@ class Planet(PhysicsObject):
         i = bisect.bisect_left(self._region_edges, distance_km)
         return self._region_ids[i] if i < len(self._region_ids) else None
 
+    # --- orbit correction controls ---
+    orbit_correction_enabled: bool = True
+    target_a_km: float = 0.0                    # 0 => use circular v = sqrt(mu/r)
+    target_ecc: float = 0.0                     # reserved (ellipse shape; phase not enforced)
+    blend_rate: float = 0.02                    # 1/s → how quickly tangential speed converges
+    radial_damp: float = 0.2                    # 1/s → how quickly radial velocity is damped
+    max_correction_dv_km_s: float = 0.05        # cap per update; set 0 to disable capping
+
     def do_update(self, dt: float, acc: Tuple[float, float]):
-        if self.orbits:
-            self.correct_orbit(dt)
-        else:
-            super().do_update(dt, acc)
+        # Integrate normally first (includes all forces/perturbations)
+        super().do_update(dt, acc)
 
+        # Then gently correct the *relative* velocity, if attached to a primary
+        if self.orbits and self.orbit_correction_enabled:
+            self._apply_orbit_correction(dt)
 
-    def correct_orbit(self, dt):
-        if self.orbits is None:
+    def _apply_orbit_correction(self, dt: float):
+        primary = self.orbits
+        if primary is None:
             return
 
+        # Relative position/velocity
+        px, py = self.position
+        cx, cy = primary.position
+        rx, ry = px - cx, py - cy
+        r2 = rx*rx + ry*ry
+        if r2 <= 0.0:
+            return
+        r = math.sqrt(r2)
+        urx, ury = rx / r, ry / r                       # radial unit
+        utx, uty = (-ury, urx)                          # tangential unit (CCW)
+        if self.orbit_direction < 0:
+            utx, uty = -utx, -uty
+
+        vx, vy = self.velocity
+        vcx, vcy = primary.velocity
+        vrx, vry = vx - vcx, vy - vcy                   # relative v
+
+        # Decompose relative velocity
+        v_r = vrx * urx + vry * ury
+        v_t = vrx * utx + vry * uty
+
+        # Target tangential speed from vis-viva (ellipse) or circular
+        mu = G * primary.mass
+        if self.target_a_km and self.target_a_km > 0.0:
+            # vis-viva: v^2 = mu * (2/r - 1/a)
+            v_des = math.sqrt(max(0.0, mu * (2.0 / r - 1.0 / self.target_a_km)))
+        else:
+            v_des = math.sqrt(mu / r)
+
+        # Exponential blend toward v_des, and damp radial drift
+        k_t = 1.0 - math.exp(-self.blend_rate * dt)     # 0..1
+        k_r = 1.0 - math.exp(-self.radial_damp * dt)    # 0..1
+
+        v_t_new = v_t + (v_des - v_t) * k_t
+        v_r_new = v_r * (1.0 - k_r)
+
+        # Recompose corrected relative velocity
+        vrx_new = v_r_new * urx + v_t_new * utx
+        vry_new = v_r_new * ury + v_t_new * uty
+
+        # Cap delta-v per step (avoid impulses)
+        dvx = (vrx_new - vrx)
+        dvy = (vry_new - vry)
+        if self.max_correction_dv_km_s and self.max_correction_dv_km_s > 0.0:
+            dv = math.hypot(dvx, dvy)
+            if dv > self.max_correction_dv_km_s:
+                s = self.max_correction_dv_km_s / dv
+                dvx *= s
+                dvy *= s
+
+        # Apply correction in inertial frame
+        self.velocity = (vx + dvx, vy + dvy)
+
+        # (Optional) keep a diagnostic radius for UI/debug
+        self.orbit_radius = r
+
+    # Convenience: infer orbital parameters from current state
+    def init_orbit_from_state(self):
+        if not self.orbits:
+            return
         cx, cy = self.orbits.position
         px, py = self.position
+        rx, ry = px - cx, py - cy
+        r = math.hypot(rx, ry)
+        vrelx = self.velocity[0] - self.orbits.velocity[0]
+        vrely = self.velocity[1] - self.orbits.velocity[1]
+        v2 = vrelx*vrelx + vrely*vrely
+        mu = G * self.orbits.mass
 
-        dx = px - cx
-        dy = py - cy
-        r = np.sqrt(dx**2 + dy**2)
-        self.orbit_radius = r  # optionally store
+        # semi-major axis from vis-viva: 1/a = 2/r - v^2/mu
+        inv_a = 2.0 / r - (v2 / mu)
+        if inv_a > 0:
+            self.target_a_km = 1.0 / inv_a
+        else:
+            # Unbound/degenerate; fall back to circular at current r
+            self.target_a_km = 0.0
 
-        # Normalize the direction perpendicular to the radius vector
-        tangent = np.array([-dy, dx]) * self.orbit_direction
-        tangent /= np.linalg.norm(tangent)
+        # orbit direction from angular momentum sign (z-component)
+        hz = rx * vrely - ry * vrelx
+        self.orbit_direction = 1 if hz >= 0.0 else -1
 
-        # Circular orbital velocity
-        v = np.sqrt(G * self.orbits.mass / r)
 
-        self.velocity = (
-            self.orbits.velocity[0] + tangent[0] * v,
-            self.orbits.velocity[1] + tangent[1] * v,
-        )
+    # ------------------- Simple builtin defaults -------------------
+    # Keep this tiny. Start with the bodies you actually need (Luna).
+    def default_resources(self) -> Dict[int, float]:
+        if self.object_type == ObjectType.LUNA:
+            return {
+                Resource.MOON_ROCK: 100,
+                Resource.METAL: 20,
+            }
+        # default: nothing
+        return {}
 
-        # Optional: snap to exact orbit path
-        self.position = (
-            cx + dx / r * self.orbit_radius,
-            cy + dy / r * self.orbit_radius
-        )
+    def default_regions(self) -> Dict[int, float]:
+        if self.object_type == ObjectType.LUNA:
+            return { Region.MOON_NEAR: 50_000 }
+        return {}
+
+    def default_flags(self) -> Dict[str, bool]:
+        if self.object_type == ObjectType.LUNA:
+            return {"is_moon": True}
+        return {}
+
+    def default_temperature(self) -> float | None:
+        if self.object_type == ObjectType.LUNA:
+            return 220.0
+        return None
+
+    # ------------------- One-shot initializer -------------------
+    def _rebuild_region_indices(self) -> None:
+        items: List[Tuple[int, float]] = sorted(self.regions_km.items(), key=lambda kv: kv[1])
+        self._region_ids   = [rid for rid, _ in items]
+        self._region_edges = [mx  for _,  mx in items]
+
+    def ensure_initialized(self) -> None:
+        # Resources
+        if not hasattr(self, "resource_map") or not self.resource_map:
+            try:
+                self.set_resources(self.default_resources())
+            except Exception:
+                self.resource_map = {}
+
+        # Regions (+ derived indices)
+        regions_missing = (not hasattr(self, "regions_km") or not self.regions_km)
+        if regions_missing:
+            regs = self.default_regions()
+            if regs:
+                self.set_regions(regs)
+            else:
+                self.regions_km = {}
+                self._region_edges = []
+                self._region_ids = []
+        else:
+            # If regions exist but indices are missing/empty, rebuild them
+            if (not hasattr(self, "_region_edges") or not hasattr(self, "_region_ids") or
+                not self._region_edges or not self._region_ids):
+                self._rebuild_region_indices()
+
+        # Flags
+        for k, v in self.default_flags().items():
+            if not hasattr(self, k):
+                setattr(self, k, v)
+
+        # Temperature (backfill only if missing)
+        if not hasattr(self, "planet_surface_temp") or self.planet_surface_temp is None:
+            t = self.default_temperature()
+            if t is not None:
+                self.set_temperature(float(t))
+
+    # ------------------- Pickle hooks -------------------
+    SAVE_SCHEMA_VERSION = 1  # optional but useful
+
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        state["_save_schema_version"] = self.SAVE_SCHEMA_VERSION
+        return state
+
+    def __setstate__(self, state):
+        # Load raw fields
+        self.__dict__.update(state)
+        # Backfill anything missing (old saves won’t have resource_map/regions)
+        self.ensure_initialized()
+
+
+def attach_orbit(body: Planet, primary: Planet, enable: bool = True):
+    """Attach body to primary and seed correction targets from its current state."""
+    body.orbits = primary
+    body.orbit_correction_enabled = enable
+    body.init_orbit_from_state()  # sets target_a_km and orbit_direction from present P/V
 
 class Sun(Planet):
     def __init__(self):
@@ -403,6 +562,13 @@ class Mars(Planet):
             Region.MARS_NEAR: 300_000,
             Region.MARS_DISTANT: 1_000_000
         })
+        self.set_resources({
+            Resource.METAL: 500,
+            Resource.BERILLYUM: 30,
+            Resource.WATER: 1,
+            Resource.GOLD: 50
+
+        })
 
         self.set_temperature(210.0)
 
@@ -486,7 +652,7 @@ class Saturn(Planet):
     def __init__(self):
         super().__init__(
             object_type=ObjectType.SATURN,
-            position=(0.0, -888_650_000),      #km
+            position=(0.0, -1_433_000_000),      #km
             velocity=(-9.69, 0.0),             #km/s
             mass=5.685e26,                      #kg
             radius_km = 58232.0, 
@@ -593,18 +759,116 @@ class Luna(Planet):
             atmosphere_density=0.5,
             name="Luna"
         )
-
+        attach_orbit(self, earth, enable=True)
+        self.target_a_km = 384_000.0
+        self.blend_rate = 0.01
+        self.radial_damp = 0.30
+        self.max_correction_dv_km_s = 0.002
         self.set_temperature(220.0)
         self.is_moon = True
         self.set_regions({
             Region.MOON_NEAR: 50_000
         })
+        self.set_resources({
+            Resource.MOON_ROCK: 100,
+            Resource.METAL: 20
+        })
 
     def do_update(self, dt: float, acc: Tuple[float, float]):
-        # Skip orbit correction and apply real physics
-        PhysicsObject.do_update(self, dt, acc)
+
+        Planet.do_update(self, dt, acc)
 
         # Update rotation to face the Earth (tidally locked)
+        if self.orbits:
+            self.rotation = direction_between_degrees(self.position, self.orbits.position)
+
+class Phobos(Planet):
+    def __init__(self, mars: "Mars"):
+        a_km = 9_376.0                # semi-major axis from Mars center (km)
+        mass = 1.0659e16              # kg
+        r_km = 11.2667
+
+        # place at +x from Mars
+        px = mars.position[0] + a_km
+        py = mars.position[1]
+
+        # tangential CCW velocity for circular orbit
+        v_mag = math.sqrt(G * mars.mass / a_km)
+        vx = mars.velocity[0]
+        vy = mars.velocity[1] + v_mag  # CCW at +x means +y vel
+
+        super().__init__(
+            object_type=ObjectType.PHOBOS,
+            position=(px, py),
+            velocity=(vx, vy),
+            mass=mass,
+            radius_km=r_km,
+            atmosphere_km=0.0,
+            atmosphere_density=0.0,
+            name="Phobos",
+            orbits=mars,
+            orbit_radius=a_km,
+            is_moon=True,
+        )
+
+        # gentle rail to hold ~a_km
+        attach_orbit(self, mars, enable=True)
+        self.target_a_km = a_km
+        self.blend_rate = 0.01
+        self.radial_damp = 0.30
+        self.max_correction_dv_km_s = 0.0008  # ~0.8 m/s per 1s tick
+
+        self.set_temperature(233.0)
+        self.set_resources({})   # optional
+        self.set_regions({})     # optional
+
+    def do_update(self, dt: float, acc: Tuple[float, float]):
+        # run orbit corrector
+        Planet.do_update(self, dt, acc)
+        # face Mars (tidal lock look)
+        if self.orbits:
+            self.rotation = direction_between_degrees(self.position, self.orbits.position)
+
+
+class Deimos(Planet):
+    def __init__(self, mars: "Mars"):
+        a_km = 23_463.0              # semi-major axis (km)
+        mass = 1.4762e15             # kg
+        r_km = 6.2
+
+        px = mars.position[0] + a_km
+        py = mars.position[1]
+
+        v_mag = math.sqrt(G * mars.mass / a_km)
+        vx = mars.velocity[0]
+        vy = mars.velocity[1] + v_mag
+
+        super().__init__(
+            object_type=ObjectType.DEIMOS,
+            position=(px, py),
+            velocity=(vx, vy),
+            mass=mass,
+            radius_km=r_km,
+            atmosphere_km=0.0,
+            atmosphere_density=0.0,
+            name="Deimos",
+            orbits=mars,
+            orbit_radius=a_km,
+            is_moon=True,
+        )
+
+        attach_orbit(self, mars, enable=True)
+        self.target_a_km = a_km
+        self.blend_rate = 0.01
+        self.radial_damp = 0.30
+        self.max_correction_dv_km_s = 0.0006
+
+        self.set_temperature(233.0)
+        self.set_resources({})
+        self.set_regions({})
+
+    def do_update(self, dt: float, acc: Tuple[float, float]):
+        Planet.do_update(self, dt, acc)
         if self.orbits:
             self.rotation = direction_between_degrees(self.position, self.orbits.position)
 
@@ -650,3 +914,4 @@ class AsteroidBeltAsteroid(PhysicsObject):
             mass=mass,
             radius_km=radius_km,
         )
+

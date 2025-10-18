@@ -39,6 +39,8 @@ class Systems(IntEnum):
     THERMAL_REGULATOR = 1
     MAGNETOMETER = 2
     ION_DRIVE = 3
+    WARP_DRIVE = 4
+
 
 @dataclass
 class AttachedVesselComponent:
@@ -113,6 +115,7 @@ class Vessel(PhysicsObject):
     astronauts_onboard: List[int] = field(default_factory=list)
     cargo_capacity: int = 0
     cargo: Dict[int, int] = field(default_factory=dict)
+    landing_progress: float = 0.0
 
     #---Telescopes---
     telescope_rcs_angle: float = 0.0
@@ -135,11 +138,13 @@ class Vessel(PhysicsObject):
     #--- Electrical Systems ---
     systems: Dict[Systems, ElectricalSystem] = field(default_factory=dict, repr=False)
     mag_push_accum: float = field(default=0.0, repr=False)
+    max_warp: int = 0
 
     #Upgrades
     unlocked_by_payload: Dict[int, Set[int]] = field(default_factory=dict)  # payload_id -> set[upgrade_id]
     stats: Dict[str, Any] = field(default_factory=dict, repr=False)
     upgrade_tree_push_accum: float = field(default=0.0, repr=False)
+
 
 
 
@@ -224,6 +229,7 @@ class Vessel(PhysicsObject):
         self.mag_push_accum = 0.0
         self.upgrade_tree_push_accum = float(getattr(self, 'upgrade_tree_push_accum', 0.0))
         self._build_on_land_fired = False
+        self.landing_progress = 0.0
 
     def _build_base_stats(self) -> Dict[str, Any]:
         return {
@@ -313,9 +319,11 @@ class Vessel(PhysicsObject):
             mass=mass_kg,
             radius_km=radius_km,
             component_index=int(comp_index),
+            agency_id = int(self.agency_id)
         )
         jc.rotation = float(self.rotation)
         jc.component_id = int(getattr(comp, "id", 0))
+        jc.agency_id = int(self.agency_id)
 
 
         # allow longer lifetime during debugging
@@ -612,11 +620,21 @@ class Vessel(PhysicsObject):
                     float(attrs.get("ion-drive-power-draw", 0.0)),
                     False
                 )
+                self.add_system(
+                    Systems.WARP_DRIVE,
+                    float(attrs.get("warp-drive", 0.0)),
+                    float(attrs.get("warp-drive-power-draw", 0.0)),
+                    False
+                )
                 attached_tau_bonus += float(attrs.get("thermal-resistance", 0.0))
                 self.solar_power += float(attrs.get("solar-power", 0.0))
                 self.nuclear_power += float(attrs.get("nuclear-power", 0.0)) * 0.1
                 self.armor += float(attrs.get("armor", 0.0))
                 self.cargo_capacity += int(attrs.get("cargo-capacity", 0) or 0)
+                self.max_warp = max(
+                    float(getattr(self, "max_warp", 0.0)),
+                    float(attrs.get("max-warp", 0.0))
+                )
 
         # set thermal resistance based on attached components
         self.thermal_resistance = max(1e-3, base_tau + attached_tau_bonus)
@@ -653,6 +671,172 @@ class Vessel(PhysicsObject):
         self.power_capacity = self._attached_power_capacity()
         self.power = min(self._attached_power(), self.power_capacity)
         self._apply_stats()
+
+
+    # -- WARP HELPERS ---
+    def warp_to_speed_km_s(self, warp: float) -> float:
+        """Invert your UI formula: speed = c * warp^(1/0.3)."""
+        if warp <= 0.0:
+            return 0.0
+        return float(C_KM_S) * (float(warp) ** (1.0 / 0.3))
+
+    def speed_to_warp(self, speed_km_s: float) -> float:
+        """UI display helper based on your given formula (only meaningful > c)."""
+        s = float(speed_km_s)
+        if s <= float(C_KM_S):
+            return 0.0
+        return (s / float(C_KM_S)) ** 0.3
+
+    def _has_powered_warp(self) -> bool:
+        sys = self.systems.get(Systems.WARP_DRIVE)
+        if not sys or not sys.active or sys.amount <= 0.0:
+            return False
+        # Must have decent charge
+        if self.power <= 0.05 * max(1e-9, self.power_capacity):
+            return False
+        # Only when not landed and out of atmosphere
+        if self.landed or not self.home_planet:
+            return False
+        try:
+            if self.altitude < float(self.home_planet.atmosphere_km) - 1e-6:
+                return False
+        except Exception:
+            pass
+        return True
+
+    def _warp_tau(self) -> float:
+        # allow per-component override: attributes["warp-tau-s"]
+        return float(self._payload_attr("warp-tau-s", 1000.0))
+
+    def _end_warp(self, sys: Optional[ElectricalSystem], reason: str = ""):
+        """Restore pre-warp velocity, clear bonus, drop the engaged flag, and (optionally) flip the system off."""
+        try:
+            # Restore original velocity exactly as requested
+            if getattr(self, "_warp_engaged", False):
+                self.velocity = tuple(getattr(self, "_warp_saved_velocity", self.velocity))
+        finally:
+            self._warp_bonus_v = (0.0, 0.0)
+            self._warp_engaged = False
+            self._warp_active_this_tick = False
+            if sys is not None:
+                # auto-deactivate hardware so UI reflects the drop
+                sys.active = False
+        
+    def apply_warp(self, dt: float):
+        """
+        Warp acts as a *speed bonus* layered on top of the vessel's pre-warp velocity.
+        While engaged, we blend a forward-pointing bonus vector toward the max-warp target
+        using the warp tau. When warp ends (any reason), we *restore* the original velocity.
+        Warp ticks bypass the c clamp and don't use thrust, so no relativistic damping applies.
+        """
+        self._warp_active_this_tick = False
+
+        sys = self.systems.get(Systems.WARP_DRIVE)
+        if not sys or sys.amount <= 0.0:
+            # If we had been in warp but hardware disappeared, restore.
+            if getattr(self, "_warp_engaged", False):
+                self._end_warp(sys=None, reason="no system")
+            return
+        if self.max_warp <= 0.0:
+            if getattr(self, "_warp_engaged", False):
+                self._end_warp(sys, "max_warp=0")
+            return
+
+        # Must be out of atmosphere and not landed (keeps your rules)
+        if self.landed:
+            if getattr(self, "_warp_engaged", False):
+                self._end_warp(sys, "landed")
+            return
+        try:
+            if self.home_planet and (self.altitude < float(self.home_planet.atmosphere_km) - 1e-6):
+                if getattr(self, "_warp_engaged", False):
+                    self._end_warp(sys, "in atmo")
+                return
+        except Exception:
+            pass
+
+        # Battery floor: auto-drop if state-of-charge is low
+        cap = max(1e-9, float(self.power_capacity))
+        soc = float(self.power) / cap if cap > 0 else 0.0
+        SOC_CUTOFF = 0.05  # 5% -> turn warp off automatically
+        if soc <= SOC_CUTOFF:
+            if getattr(self, "_warp_engaged", False):
+                self._end_warp(sys, "low battery")
+            return
+
+        # If the user turned the system off, fall out of warp and restore
+        if not sys.active:
+            if getattr(self, "_warp_engaged", False):
+                self._end_warp(sys=None, reason="manually off")
+            return
+
+        # --- Power draw & throttle (per real tick) ---
+        draw_per_sec = max(0.0, float(getattr(sys, "power_draw", 0.0))) * 0.01  # your 0.01 scaling
+        need = draw_per_sec * max(0.0, float(dt))
+        throttle = 1.0
+        if need > 0.0:
+            before = self.power
+            _ = self._draw_power(need)          # may be partial
+            used = max(0.0, before - self.power)
+            if used <= 0.0:
+                # no juice -> fall out of warp and restore
+                if getattr(self, "_warp_engaged", False):
+                    self._end_warp(sys, "no power")
+                return
+            throttle = min(1.0, used / need)
+
+        # --- First engage: capture the *original* velocity we’ll restore later ---
+        if not getattr(self, "_warp_engaged", False):
+            self._warp_saved_velocity = tuple(self.velocity)
+            self._warp_bonus_v = (0.0, 0.0)
+            self._warp_engaged = True
+
+        # --- Direction (your “strange math”): forward = (cos rot, -sin rot) ---
+        ang = math.radians(self.rotation)
+        fwd = (math.cos(ang), -math.sin(ang))
+
+        # --- Target warp speed from max_warp, mapped to bonus magnitude ---
+        target_speed = self.warp_to_speed_km_s(float(self.max_warp))
+        if target_speed <= 0.0:
+            # Nothing to do; treat as deactivation
+            self._end_warp(sys, "zero target")
+            return
+        tvx, tvy = (fwd[0] * target_speed, fwd[1] * target_speed)
+
+        # --- Smooth spin-up/spin-down of the *bonus* using warp tau & system amount ---
+        base_tau = max(1e-3, float(self._warp_tau()))
+        eff_tau  = max(1e-3, base_tau / max(1e-6, float(sys.amount)))
+        # real-time scaling (not affected by gamespeed)
+        scaled_dt = float(dt)
+        alpha = (1.0 - math.exp(-scaled_dt / eff_tau)) * throttle
+        if alpha <= 0.0:
+            # still mark warp-active so we skip c-clamp this tick if engaged
+            self._warp_active_this_tick = bool(self._warp_engaged)
+            # Keep current composed velocity
+            svx, svy = self._warp_saved_velocity
+            bx, by   = self._warp_bonus_v
+            self.velocity = (svx + bx, svy + by)
+            return
+
+        # Blend the *bonus* toward the forward target, independent of base velocity.
+        bx, by = self._warp_bonus_v
+        bx = bx + (tvx - bx) * alpha
+        by = by + (tvy - by) * alpha
+        self._warp_bonus_v = (bx, by)
+
+        # Compose final velocity for physics this tick: original + bonus
+        svx, svy = self._warp_saved_velocity
+        self.velocity = (svx + bx, svy + by)
+
+        # While warp is active this tick, skip the c clamp in do_update
+        self._warp_active_this_tick = True
+
+        # Optional: graceful auto-drop if throttle collapses (e.g., power starvation)
+        # When the bonus is very small relative to target and throttle is tiny, disengage.
+        if throttle < 0.05:
+            # start spinning the bonus down smoothly by turning the system off;
+            # _end_warp will restore the base instantly per design.
+            self._end_warp(sys, "throttle too low")
 
     # ----------------------
     # Cargo helpers
@@ -1133,6 +1317,37 @@ class Vessel(PhysicsObject):
             except Exception as e:
                 print(f"[Vessel] payload on_tick error: {e}")
 
+    def _tick_landing_initiation(self, dt: float):
+        if self.landed or not self.home_planet:
+            self.landing_progress = 0.0
+            return
+
+        # "In space" = above the home planet's atmosphere ceiling
+        atm = float(getattr(self.home_planet, "atmosphere_km", 0.0))
+        in_space = self.altitude >= atm - 1e-6
+        if not in_space:
+            self.landing_progress = 0.0
+            return
+
+        # "Over the planet" = within the planet's radius (center distance <= R)
+        px, py = self.home_planet.position
+        x, y = self.position
+        dist = math.hypot(x - px, y - py)
+        R = float(getattr(self.home_planet, "radius_km", 0.0))
+
+        if dist <= R + 1e-6:
+            self.landing_progress = min(6.0, self.landing_progress + max(0.0, float(dt) / 1000))
+        else:
+            self.landing_progress = 0.0
+
+        # Hit 6s → bump just inside atmo so normal landing logic takes over
+        if self.landing_progress >= 6.0 and self.altitude >= atm - 1e-6:
+            self.altitude = max(0.0, atm - 1.0)
+            if self.z_velocity > 0.0:
+                self.z_velocity = 0.0
+            self.landing_progress = 6.0
+
+
     def _max_tier_for_current_payload(self) -> int:
         """Gate by agency attributes"""
         agency = self.shared.agencies.get(self.agency_id)
@@ -1356,8 +1571,16 @@ class Vessel(PhysicsObject):
         if not self.landed:
             self._maybe_rehome_to_strongest()
 
+        # NEW: landing initiation tracking
+        self._tick_landing_initiation(dt)
+
         _prev_rel = self._rel_speed_to(self.home_planet)
         self.apply_ion_drive(dt)
+        self.apply_warp(dt)
+
+        _prev_rel = self._rel_speed_to(self.home_planet)
+        self.apply_ion_drive(dt)
+        self.apply_warp(dt)
         # 1. Apply Thrust before physics updates
         if self.control_state.get(VesselState.FORWARD_THRUSTER_ON, False):
             self.apply_forward_thrust(dt)
@@ -1368,7 +1591,7 @@ class Vessel(PhysicsObject):
         if self.control_state.get(VesselState.REVERSE_THRUSTER_ON, False):
             self.apply_reverse_thrust(dt)
 
-        self._maybe_begin_landing_when_matching_velocity(_prev_rel, self._rel_speed_to(self.home_planet))
+       # OLD METHOD OF LANDING self._maybe_begin_landing_when_matching_velocity(_prev_rel, self._rel_speed_to(self.home_planet))
 
 
         # Check transition condition: should we launch?
@@ -1407,13 +1630,15 @@ class Vessel(PhysicsObject):
         if self.nuclear_power > 0.0:
             self._charge_power(self.nuclear_power * scaled_dt)
 
-        # Clamp to speed of light (FOR NOW!)
+        # Clamp to speed of light (If no warp)
         vx, vy = self.velocity
         speed = math.hypot(vx, vy)
-        C_KM_S = 299_792.458
-        if speed > C_KM_S:
-            scale = C_KM_S / speed
-            self.velocity = (vx * scale, vy * scale)
+        C_CAP = 299_792.458
+
+        if not getattr(self, "_warp_active_this_tick", False):
+            if speed > C_CAP:
+                scale = C_CAP / speed
+                self.velocity = (vx * scale, vy * scale)
 
         # 4 -  Stream vessel data to clients
         chunkpacket = bytearray()
@@ -1434,6 +1659,7 @@ class Vessel(PhysicsObject):
             force = 0.0
         chunkpacket += struct.pack('<f', force)
         chunkpacket += struct.pack('<B', self.landed)
+        chunkpacket += struct.pack('<f', self.landing_progress)
         chunkpacket += struct.pack('<f', self.hull_integrity)
         chunkpacket += struct.pack('<f', self.liquid_fuel_kg)
         chunkpacket += struct.pack('<f', self.liquid_fuel_capacity_kg)
@@ -1485,10 +1711,21 @@ class Vessel(PhysicsObject):
             return {}
         return UPGRADE_TREES_BY_PAYLOAD.get(int(self.payload), {})
 
+
     def current_payload_unlocked(self) -> Set[int]:
         if not self.has_payload:
             return set()
         return self.unlocked_by_payload.setdefault(int(self.payload), set())
+
+    def signal_vessel_destroyed(self):
+        chunkpacket = bytearray()
+        chunkpacket.append(DataGramPacketType.SIGNAL_DESTROY)
+        chunkpacket += struct.pack('<Q', self.object_id)
+        for player in self.shared.players.values():
+            session = player.session
+            if session and session.udp_port and session.alive:
+                addr = (session.remote_ip, session.udp_port)
+                self.shared.udp_server.transport.sendto(chunkpacket, addr)
 
     def planet_income_multiplier(self) -> float:
         """
@@ -1837,6 +2074,7 @@ class Vessel(PhysicsObject):
         self.z_velocity = 0.0
         self.rotation_velocity = 0.0
         self.velocity = self.home_planet.velocity
+        self.landing_progress = 0.0
 
         # (removed) self._trigger_build_on_land_if_any()
 
@@ -1883,6 +2121,7 @@ class Vessel(PhysicsObject):
         self.altitude = 0.1
         self.z_velocity = 0.2
         self.unland_grace_time_s = 0.75
+        self.landing_progress = 0.0
 
         # NEW: delegate takeoff/unland to payload behavior (optional)
         self._ensure_payload_behavior()
@@ -2276,6 +2515,7 @@ class Vessel(PhysicsObject):
         self.mass = 0.0
         self.components.clear()
 
+        self.signal_vessel_destroyed()
 
 
     def cool_towards_ambient(self, dt: float):
@@ -2510,10 +2750,73 @@ def construct_vessel_from_request(shared, player, vessel_request_data) -> Vessel
         player.money -= total_cost
         print("Creating vessel")
         payload_idx = detect_payload_index(components, component_data_lookup)
-        stages = calculate_component_stages(components, connections, component_data_lookup, payload_idx)
 
+        # 1) Pull attributes and prepare helpers
+        attrs_by_idx = []
+        for comp in components:
+            comp_def = component_data_lookup.get(comp.id, {}) or {}
+            attrs_by_idx.append((comp_def.get("attributes", {}) or {}))
+
+        def has_stage_add(idx: int) -> bool:
+            return bool(attrs_by_idx[idx].get("stage-add"))
+
+        # 2) Build adjacency from connections (pairs of component indices)
+        from collections import defaultdict, deque
+        adj = defaultdict(list)
+        for a, b in connections:
+            adj[a].append(b)
+            adj[b].append(a)
+
+        # 3) Root at your “center” (components[0]) and compute graph distances
+        root = 0
+        dist = {root: 0}
+        dq = deque([root])
+        while dq:
+            u = dq.popleft()
+            for v in adj.get(u, []):
+                if v not in dist:
+                    dist[v] = dist[u] + 1
+                    dq.append(v)
+        # Components not reached get a big distance so they lose ties predictably
+        INF = 10**9
+        for i in range(len(components)):
+            if i not in dist:
+                dist[i] = INF
+
+        # 4) Decide which endpoints to suppress on each stage-add/stage-add edge
+        suppress = set()
+        for a, b in connections:
+            if has_stage_add(a) and has_stage_add(b):
+                da, db = dist[a], dist[b]
+                if da == db:
+                    # Tie: pick the lower index as the parent, suppress the other
+                    parent, child = (a, b) if a < b else (b, a)
+                elif da < db:
+                    parent, child = a, b
+                else:
+                    parent, child = b, a
+                suppress.add(child)
+
+        # 5) Create a shallow, call-scoped copy of the lookup with masked flags
+        #    (so we don’t mutate the global shared.component_data)
+        masked_lookup = {}
+        for comp in components:
+            base_def = component_data_lookup.get(comp.id, {}) or {}
+            # shallow copies
+            new_def = dict(base_def)
+            new_attrs = dict(new_def.get("attributes", {}) or {})
+            # If this instance (by index) is suppressed, force stage-add False
+            idx = components.index(comp)  # safe here; components are unique instances
+            if idx in suppress and new_attrs.get("stage-add"):
+                new_attrs["stage-add"] = False
+            new_def["attributes"] = new_attrs
+            masked_lookup[comp.id] = new_def
+
+        # 6) Now compute stages using the masked lookup
+        stages = calculate_component_stages(components, connections, masked_lookup, payload_idx)
         for comp, st in zip(components, stages):
             setattr(comp, "stage", st)
+
 
         center_component = components[0]
         vessel = Vessel(
