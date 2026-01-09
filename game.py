@@ -238,6 +238,7 @@ class Game:
                     "members": list(map(int, agency.members)),
                     "primarycolor": int(agency.primarycolor),
                     "secondarycolor": int(agency.secondarycolor),
+                    "flag": int(agency.flag),
                     "income_per_second": int(getattr(agency, "income_per_second", 0)),
                     "base_inventories": agency.base_inventories,
                     "base_capacities": agency.base_inventory_capacities,
@@ -247,6 +248,10 @@ class Game:
                     "astronauts": astronauts_payload,
                     "astros_by_planet": astros_by_planet,
                     "astro_seq": int(getattr(agency, "_astro_seq", 0)),
+                    "rp": int(getattr(agency, "research_points", 0)),
+                    "ep": int(getattr(agency, "exploration_points", 0)),
+                    "pp": int(getattr(agency, "publicity_points", 0)),
+                    "xp": int(getattr(agency, "experience_points", 0)),
 
                 })
 
@@ -306,7 +311,14 @@ class Game:
                     agency.members = list(map(int, a.get("members", [])))
                     agency.primarycolor = int(a.get("primarycolor", 0))
                     agency.secondarycolor = int(a.get("secondarycolor", 0))
+                    agency.flag = int(a.get("flag", 0))
                     agency.income_per_second = int(a.get("income_per_second", 0))
+
+                    agency.research_points    = int(a.get("rp", getattr(agency, "research_points", 0)))
+                    agency.exploration_points = int(a.get("ep", getattr(agency, "exploration_points", 0)))
+                    agency.publicity_points   = int(a.get("pp", getattr(agency, "publicity_points", 0)))
+                    agency.experience_points  = int(a.get("xp", getattr(agency, "experience_points", 0)))                   
+
                     raw_inv = a.get("base_inventories", {}) or {}
                     raw_disc = a.get("discovered_planets", []) or []
                     try:

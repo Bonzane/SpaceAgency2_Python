@@ -25,6 +25,7 @@ class Agency:
     total_money: int = 0
     primarycolor: int = 0
     secondarycolor: int = 0
+    flag: int = 0
     unlocked_buildings: set = field(default_factory=set)
     unlocked_components: set = field(default_factory=set)
     vessels: List[Vessel] = field(default_factory=list)
@@ -36,6 +37,10 @@ class Agency:
     planet_to_astronauts: Dict[int, Set[int]] = field(default_factory=lambda: defaultdict(set))
     _astro_seq: int = 0
     discovered_planets: Set[int] = field(default_factory=set)
+    research_points: int = 0
+    exploration_points: int = 0
+    publicity_points: int = 0
+    experience_points: int = 0
     def __post_init__(self):
         default_building = Building(BuildingType.EARTH_HQ, self.shared, 7, 2, self)
         self.bases_to_buildings[2] = [default_building]
@@ -759,6 +764,11 @@ class Agency:
             "astronauts": astronauts_serialized,    
             "astros_by_planet": astros_by_planet,
             "discovered_planets": sorted(int(pid) for pid in self.discovered_planets),
+            "rp": int(self.research_points),
+            "ep": int(self.exploration_points),
+            "pp": int(self.publicity_points),
+            "xp": int(self.experience_points),
+            "flag": int(self.flag),
         }
 
         payload = json.dumps(data, separators=(',', ':')).encode('utf-8')
@@ -772,5 +782,9 @@ class Agency:
             "name": self.name,
             "public": bool(self.is_public),
             "members": [int(sid) for sid in self.members],  # steam IDs only
+            "rp": int(self.research_points),
+            "ep": int(self.exploration_points),
+            "pp": int(self.publicity_points),
+            "xp": int(self.experience_points),
         }
 

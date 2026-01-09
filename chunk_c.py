@@ -19,6 +19,40 @@ from vessel_components import Components
 def is_planet(o):
     return hasattr(o, "check_in_region") or hasattr(o, "check_in_region_sq")
 
+def select_backend(force_cpu):
+    if not force_cpu:
+        try:
+            import cupy as cp
+
+            # 1) Check that CUDA runtime can see at least one device
+            try:
+                n_devices = cp.cuda.runtime.getDeviceCount()
+                if n_devices <= 0:
+                    raise RuntimeError("No CUDA devices available")
+
+                # 2) Try a tiny allocation + sync to catch driver/library mismatch
+                x = cp.zeros(1)
+                x += 1  # simple kernel
+                cp.cuda.Stream.null.synchronize()
+
+            except Exception as e:
+                # CuPy is installed but CUDA is not actually usable
+                print(f"⚠️ CuPy found but CUDA unusable ({e!r}); falling back to CPU")
+                raise ImportError("CuPy unusable")  # force CPU fallback below
+
+            # If we got here, GPU is good
+            print("✅ GPU acceleration enabled using CuPy")
+            return cp, True
+
+        except ImportError:
+            # No CuPy or unusable CUDA –> CPU
+            import numpy as np
+            print("⚠️ Falling back to CPU (NumPy only)")
+            return np, False
+    else:
+        import numpy as np
+        print("⚠️ Falling back to CPU (NumPy only)")
+        return np, False
 
 class Chunk:
     def __init__(self, galaxy: int, system: int, filepath: Union[str, Path], managed_by):
@@ -35,17 +69,9 @@ class Chunk:
         self.deserialize_chunk()
         self.ready = True
 
-        # Cache backend selection for the lifetime of the process
-        try:
-            import cupy as xp  # GPU
-            self.xp = xp
-            self.on_gpu = True
-            print("✅ GPU acceleration enabled using CuPy")
-        except Exception:
-            import numpy as xp  # CPU
-            self.xp = xp
-            self.on_gpu = False
-            print("⚠️ Falling back to CPU (NumPy only)")
+        # TEMPORARILY SKIP GPU - MINE IS BROKEN LOL
+        self.xp, self.on_gpu = select_backend(True)
+
 
     def is_ready(self) -> bool:
         return self.ready
@@ -92,6 +118,7 @@ class Chunk:
         return value % (1 << 64)
 
     def update_objects(self, dt=1.0, debug_backend=False):
+        #print("tick")
         xp = self.xp
         on_gpu = self.on_gpu
         if debug_backend:
@@ -459,7 +486,7 @@ class Chunk:
 
         for obj in to_remove:
             self.remove_object(obj)
-
+        #print("end tick")
     def _nuke_explode(self, nuke_obj, *, radius_km=150_000.0, peak_dv_km_s=25.0, falloff="smooth"):
         """
         Apply an outward impulse to nearby non-planet PhysicsObjects.

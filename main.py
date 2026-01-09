@@ -78,30 +78,32 @@ class ServerApp(App):
 async def main():
     # Attempt to contact the listing server
     http_client = server.HttpClient()
-    listing_domain = server_settings.get("listing_domain", "https://list.commsat.org")
+    listing_domain = server_settings.get("listing_domain" , "https://list.commsat.org")
     print("This is the listing domain: " + listing_domain)
-    listing_server_status = http_client.listing_healthcheck(listing_domain)
+    listing_server_status = http_client.listing_healthcheck(listing_domain+ "/api/healthcheck")
+    print("Listing healthcheck status:", listing_server_status)
 
     # Create the mission control
     admins = server_settings.get("administrators", [])
     missioncontrol = server.ServerMissionControl(admins)
     missioncontrol.set_public_name(server_settings.get("server_name", "Commsat"))
     missioncontrol.main_loop = asyncio.get_running_loop()
+    missioncontrol.game_mode = server_settings.get("game_mode", "explore")
 
-
-    # Start the posting loop - This task sends the listing server information about your server,
-    # So that everyone can find your game! 
-    status_update_task = asyncio.create_task(server.update_listing_server(missioncontrol, http_client, listing_domain))
 
 
     # Initialize TCP server
     control_port = int(server_settings.get("control_port", 9001))
     missioncontrol.set_control_port(control_port)
     missioncontrol.set_control_port_extern(int(server_settings.get("tcp_control_port_external", 9001)))
-    missioncontrol.set_streaming_port_extern(int(server_settings.get("udp_streaming_port_external", 9001)))
+    missioncontrol.set_streaming_port_extern(int(server_settings.get("udp_streaming_port_external", 9002)))
     control_server = server.ControlServer(missioncontrol, control_port)
     control_server.activate()
     missioncontrol.tcp_server = control_server
+
+    # Start the posting loop - This task sends the listing server information about your server,
+    # So that everyone can find your game! 
+    status_update_task = asyncio.create_task(server.update_listing_server(missioncontrol, http_client, listing_domain))
 
     # Start TCP server task
     tcp_task = asyncio.create_task(control_server.start())
@@ -125,8 +127,8 @@ async def main():
     missioncontrol.server_global_cash_multiplier = float(game_defaults.get("globalcashmultipler", 1.0))
     missioncontrol.global_thrust_multiplier = float(game_defaults.get("thrustmultiplier", 0.2))
     missioncontrol.tickrate = tickrate
-    game = Game(game_files, tickrate, gamespeed, missioncontrol)
-    missioncontrol.game = game
+    missioncontrol.game = await asyncio.to_thread(Game, game_files, tickrate, gamespeed, missioncontrol)
+
 
 
 

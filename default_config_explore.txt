@@ -9,7 +9,7 @@
 🚀  Game - Which game does the server launch?
 🚀 -----------------------------------------
 
-game.path ./gameData/devgame6/
+game.path ./gameData/spaceWar/
 🚀 Relative path reccomended
 
 

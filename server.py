@@ -15,7 +15,8 @@ import time
 
 class HttpClient:
     def __init__(self):
-        self.session = aiohttp.ClientSession()
+        timeout = aiohttp.ClientTimeout(total=8, connect=3, sock_read=5)
+        self.session = aiohttp.ClientSession(timeout=timeout)
 
     def listing_healthcheck(self, url):
         print(f"Performing health check on listing server: {url}")
@@ -55,6 +56,7 @@ async def update_listing_server(shared_state, http_client, to_url):
                 "controlServerTCPPort" : shared_state.external_control_port ,
                 "streamingServerUDPPort" : shared_state.external_streaming_port,
                 "serverPublicName" : shared_state.server_public_name,
+                "gameMode" : shared_state.game_mode,
                 "passwordProtected" : 0,       # <- BS
                 "maxConnections" : 100,      # <- BS
                 "selfReportedStatus" : 0,      # <- BS
@@ -85,6 +87,7 @@ class ServerMissionControl:
         self.server_public_status = 1
         self.max_players = None
         self.host = "0.0.0.0"
+        self.game_mode = "undefined"
         self.control_port = None
         self.streaming_port = None
         self.external_control_port = None
@@ -273,6 +276,9 @@ class ServerMissionControl:
     
     def set_streaming_port_extern(self, newport):
         self.external_streaming_port = newport
+
+    def set_game_mode(self, mode: str):
+        self.game_mode = mode
 
     def get_resource_rate(self, resource_type: int) -> int:
         try:
