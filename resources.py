@@ -29,6 +29,7 @@ class Resource(IntEnum):
     NEBULA_GAS = 25
     OORT_ICE = 26
     TRANSPARENT_ALUMINUM = 27
+    PLATINUM = 28
     
 
     

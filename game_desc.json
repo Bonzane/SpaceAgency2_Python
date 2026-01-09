@@ -329,7 +329,9 @@
         ["Dark Matter", 1000000000000],
         ["Quantum Dust", 1000000000000],
         ["Nebula Gas", 1000000000],
-        ["Oort Ice", 1000000]
+        ["Oort Ice", 1000000],
+        ["Transparent Aluminum", 500000],
+        ["Platinum", 125000]
     ],
     "crafting_recipes" :  {
         "Chem Lab" : {

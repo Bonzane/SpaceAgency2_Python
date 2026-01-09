@@ -522,10 +522,11 @@ class Earth(Planet):
             Resource.WATER: 1000,
             Resource.GOLD: 20,
             Resource.DIAMOND: 10, 
-            Resource.PLUTONIUM: 3, 
+            Resource.PLUTONIUM: 2, 
             Resource.XENON: 5,
             Resource.BERILLYUM: 30,
-            Resource.OBSIDIAN_SHARD: 1
+            Resource.OBSIDIAN_SHARD: 1,
+            Resource.PLATINUM: 4
 
         })
 
@@ -772,6 +773,7 @@ class Luna(Planet):
         self.set_resources({
             Resource.MOON_ROCK: 100,
             Resource.METAL: 20
+            Resource.PLATINUM: 4
         })
 
     def do_update(self, dt: float, acc: Tuple[float, float]):
