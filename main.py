@@ -109,6 +109,8 @@ async def main():
     missioncontrol.official_server = str(os.getenv("OFFICIAL_SERVER", server_settings.get("official_server", "0"))).lower() in ("1", "true", "yes")
     missioncontrol.steam_app_id = int(os.getenv("STEAM_APP_ID", server_settings.get("steam_app_id", 0)) or 0)
     missioncontrol.steam_publisher_key = os.getenv("STEAM_PUBLISHER_KEY", server_settings.get("steam_publisher_key", "")) or ""
+    missioncontrol.use_manual_host = str(server_settings.get("sethostmanually", "0")).strip() == "1"
+    missioncontrol.manual_host = server_settings.get("manual_host", "").strip() or None
 
 
 

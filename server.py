@@ -53,6 +53,8 @@ async def update_listing_server(shared_state, http_client, to_url):
             # Force IPv4 host discovery
             def _ipv4_addr():
                 import ipaddress, socket
+                if getattr(shared_state, "use_manual_host", False) and getattr(shared_state, "manual_host", None):
+                    return str(shared_state.manual_host)
                 h = getattr(shared_state, "host", "") or ""
                 try:
                     if h:
@@ -115,6 +117,8 @@ class ServerMissionControl:
         self.streaming_port = None
         self.external_control_port = None
         self.external_streaming_port = None
+        self.manual_host = None
+        self.use_manual_host = False
         self.component_data = None
         self.next_available_agency_id = 5
         self.udp_server = None

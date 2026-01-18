@@ -31,6 +31,9 @@ server_settings.udp_streaming_port_external 58112
 server_settings.tickrate 60
 🚀  If you obtain a trust key from Hyder, put it here!
 server_settings.trustkey 0
+🚀  If sethostmanually is 1, the manual_host value will be used for listings.
+server_settings.sethostmanually 0
+server_settings.manual_host 0.0.0.0
 
 
 
@@ -51,5 +54,4 @@ game_defaults.gamespeedmultiplier 0.5
 
 🚀 This is a boolean value. 0 = false 1 = true. 
 game_defaults.disableglobalchat 0
-
 
