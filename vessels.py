@@ -118,6 +118,23 @@ class Vessel(PhysicsObject):
     landing_progress: float = 0.0
     manned_mission_time_days: float = 0.0
 
+    # --- navigation helpers ---
+    def _direction_from_origin(self) -> Tuple[float, float]:
+        x, y = self.position
+        mag = math.hypot(x, y)
+        if mag <= 0:
+            return (1.0, 0.0)
+        return (x / mag, y / mag)
+
+    def _direction_to_point(self, pt: Tuple[float, float]) -> Tuple[float, float]:
+        px, py = pt
+        x, y = self.position
+        dx, dy = (px - x), (py - y)
+        mag = math.hypot(dx, dy)
+        if mag <= 0:
+            return (1.0, 0.0)
+        return (dx / mag, dy / mag)
+
     #---Telescopes---
     telescope_rcs_angle: float = 0.0
     telescope_targets_in_sight: List[GameObject] = field(default_factory=list, repr=False)
@@ -716,6 +733,47 @@ class Vessel(PhysicsObject):
     def _warp_tau(self) -> float:
         # allow per-component override: attributes["warp-tau-s"]
         return float(self._payload_attr("warp-tau-s", 1000.0))
+
+    def _check_chunk_transition(self) -> None:
+        try:
+            cm = getattr(self.shared, "chunk_manager", None)
+            ch = getattr(self, "home_chunk", None)
+            if not cm or not ch:
+                return
+            scale_km = getattr(ch, "km_per_unit", 1.0)
+            r_units = math.hypot(self.position[0], self.position[1])
+            r_km = r_units * scale_km
+
+            # In a system chunk
+            if ch.system > 0:
+                if r_km > cm.system_exit_radius_km:
+                    cm.transfer_to_starmap(self)
+                return
+
+            # In a galaxy starmap
+            if ch.galaxy > 0 and ch.system == 0:
+                # Try to enter a system if close to a point
+                for p in cm.get_starmap_points(ch.galaxy):
+                    px, py = float(p.get("x", 0.0)), float(p.get("y", 0.0))
+                    dist = math.hypot(self.position[0] - px, self.position[1] - py)
+                    if dist <= cm.starmap_entry_radius:
+                        cm.transfer_to_system(self, ch.galaxy, int(p.get("id", 0)), (px, py))
+                        return
+                # Exit to universe if beyond galaxy boundary
+                if r_units > cm.galaxy_boundary_radius:
+                    cm.transfer_to_universe(self)
+                return
+
+            # In the universe map
+            if ch.galaxy == 0:
+                for p in cm.get_universe_points():
+                    px, py = float(p.get("x", 0.0)), float(p.get("y", 0.0))
+                    dist = math.hypot(self.position[0] - px, self.position[1] - py)
+                    if dist <= cm.universe_entry_radius:
+                        cm.transfer_to_galaxy(self, int(p.get("id", 1)), (px, py))
+                        return
+        except Exception as e:
+            print(f"⚠️ chunk transition check failed: {e}")
 
     def _end_warp(self, sys: Optional[ElectricalSystem], reason: str = ""):
         """Restore pre-warp velocity, clear bonus, drop the engaged flag, and (optionally) flip the system off."""
@@ -1736,6 +1794,9 @@ class Vessel(PhysicsObject):
                 self.shared.udp_server.transport.sendto(chunkpacket, addr)
 
         #print(f"[DEBUG] Vessel {self.object_id} Velocity: vx={self.velocity[0]:.2f}, vy={self.velocity[1]:.2f}, Altitude: {self.altitude:.2f}")
+
+        # --- Chunk transition checks ---
+        self._check_chunk_transition()
 
 
 

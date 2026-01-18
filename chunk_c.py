@@ -72,6 +72,9 @@ class Chunk:
         # Prefer GPU when available; fall back to CPU automatically.
         self.xp, self.on_gpu = select_backend(False)
 
+        # Cache scale for this chunk
+        self.km_per_unit = self.manager.scale_for(self.galaxy, self.system)
+
 
     def is_ready(self) -> bool:
         return self.ready
@@ -599,6 +602,16 @@ class Chunk:
 
 
     def deserialize_chunk(self):
+        # Map chunks (.sa2map) are lightweight and have no pickled objects
+        if self.path.suffix == ".sa2map":
+            if not self.path.exists():
+                print(f"⚠️ No map file found at {self.path}.")
+            else:
+                print(f"📜 Loaded map file {self.path.name} (no objects to deserialize).")
+            self.objects = []
+            self.id_to_object = {}
+            return
+
         if not self.path.exists():
             print(f"⚠️ No chunk file found at {self.path}.")
             return
@@ -700,6 +713,10 @@ class Chunk:
             try:
                 self.objects.remove(inst)
             except ValueError:
+                pass
+            try:
+                self.manager.unregister_object(oid)
+            except Exception:
                 pass
         if hasattr(self.manager, "unregister_object"):
             try:

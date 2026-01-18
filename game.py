@@ -85,6 +85,12 @@ class Game:
             if (self.universe_path / "players.sa2").exists():
                 return True
 
+            # Galaxy/Universe maps
+            if (self.universe_path / "intergalacticMap.sa2map").exists():
+                return True
+            if (self.universe_path / "galaxies" / "1" / "interstellarMap.sa2map").exists():
+                return True
+
         except Exception as e:
             print(f"⚠️ Existing game detection error: {e}")
         return False
