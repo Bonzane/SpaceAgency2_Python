@@ -48,6 +48,7 @@ class Agency:
     steam_achievement_state: Dict[str, bool] = field(default_factory=dict)
     visited_planets: Set[int] = field(default_factory=set)
     age_days: float = 0.0
+    invited: Set[int] = field(default_factory=set)
     def __post_init__(self):
         default_building = Building(BuildingType.EARTH_HQ, self.shared, 7, 2, self)
         self.bases_to_buildings[2] = [default_building]
@@ -56,6 +57,32 @@ class Agency:
         self.discovered_planets.add(0)
         self.discovered_planets.add(3)
         self.visited_planets.add(EARTH_ID)
+        if not hasattr(self, "invited") or self.invited is None:
+            self.invited = set()
+
+    # ---- Invites ----
+    def add_invite(self, steam_id: int) -> None:
+        if not hasattr(self, "invited") or self.invited is None:
+            self.invited = set()
+        try:
+            self.invited.add(int(steam_id))
+        except Exception:
+            pass
+
+    def is_invited(self, steam_id: int) -> bool:
+        try:
+            sid = int(steam_id)
+        except Exception:
+            return False
+        return bool(getattr(self, "invited", set()) and sid in self.invited)
+
+    def consume_invite(self, steam_id: int) -> None:
+        try:
+            sid = int(steam_id)
+        except Exception:
+            return
+        if hasattr(self, "invited") and self.invited:
+            self.invited.discard(sid)
 
     def _xp_curve(self) -> Dict[str, float | int]:
         gd = getattr(self.shared, "game_description", {}) or {}
@@ -1199,6 +1226,7 @@ class Agency:
         data = {
             "id": self.id64,
             "mbrs": self.members,
+            "invited": list(getattr(self, "invited", set()) or []),
             "mny": self.get_money(),
             "bases": bases_serialized,
             "mny_prsec": self.income_per_second,

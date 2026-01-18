@@ -340,6 +340,10 @@ class Game:
                     agency.secondarycolor = int(a.get("secondarycolor", 0))
                     agency.flag = int(a.get("flag", 0))
                     agency.income_per_second = int(a.get("income_per_second", 0))
+                    try:
+                        agency.invited = set(int(x) for x in a.get("invited", []) or [])
+                    except Exception:
+                        agency.invited = set()
 
                     agency.research_points    = int(a.get("rp", getattr(agency, "research_points", 0)))
                     agency.exploration_points = int(a.get("ep", getattr(agency, "exploration_points", 0)))

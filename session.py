@@ -477,11 +477,14 @@ class Session:
                         await udp.notify_steam_ids([int(player.steamID)], 1, "Join failed: agency does not exist.")
                     return
 
+                invited = False
                 if not bool(getattr(target_agency, "is_public", False)):
-                    print(f"❌ JOIN_AGENCY: agency {target_agency_id} is private")
-                    if udp:
-                        await udp.notify_steam_ids([int(player.steamID)], 1, "Join failed: that agency is private.")
-                    return
+                    invited = bool(hasattr(target_agency, "is_invited") and target_agency.is_invited(player.steamID))
+                    if not invited:
+                        print(f"❌ JOIN_AGENCY: agency {target_agency_id} is private")
+                        if udp:
+                            await udp.notify_steam_ids([int(player.steamID)], 1, "Join failed: that agency is private.")
+                        return
 
                 # Already in that agency?
                 if int(getattr(player, "agency_id", 0)) == int(target_agency_id):
@@ -514,6 +517,9 @@ class Session:
                 # Add to the new (public) agency
                 try:
                     target_agency.add_player(int(player.steamID))
+                    # consume invite if used
+                    if invited and hasattr(target_agency, "consume_invite"):
+                        target_agency.consume_invite(player.steamID)
                 except Exception as e:
                     print(f"❌ JOIN_AGENCY: add_player failed: {e}")
                     if udp:
@@ -554,6 +560,40 @@ class Session:
             except Exception as e:
                 print(f"❌ JOIN_AGENCY error: {e}")
 
+        elif function_code == PacketType.AGENCY_INVITE:
+            try:
+                # Payload: [u64 target_steam_id]
+                target_id = int.from_bytes(await self.reader.readexactly(8), "little")
+                player = self.control_server.get_player_by_steamid(self.steam_id)
+                if not player:
+                    print("⚠️ AGENCY_INVITE: no bound player for this session")
+                    return
+                shared = self.control_server.shared
+                udp = getattr(shared, "udp_server", None)
+                agency = shared.agencies.get(getattr(player, "agency_id", 0))
+                if not agency:
+                    if udp:
+                        await udp.notify_steam_ids([int(player.steamID)], 1, "Invite failed: you are not in an agency.")
+                    return
+                agency.add_invite(target_id)
+                # Notify target if online
+                if udp:
+                    try:
+                        # Send as chat from inviter to target
+                        msg = f"invited you to join {agency.name}"
+                        chat_pkt = self.control_server._build_chat_packet(ChatMessage.DIRECTED, int(player.steamID), msg)
+                        await self.control_server.send_chat_packet_to_targets(chat_pkt, [int(target_id)])
+                    except Exception as e:
+                        print(f"⚠️ notify invite target failed: {e}")
+                    try:
+                        await udp.notify_steam_ids([int(player.steamID)], 0, "Invite sent.")
+                    except Exception:
+                        pass
+                print(f"📨 Invite sent from {player.steamID} to {target_id} for agency {agency.id64}")
+            except asyncio.IncompleteReadError:
+                print("⚠️ AGENCY_INVITE: client disconnected mid-read")
+            except Exception as e:
+                print(f"❌ AGENCY_INVITE error: {e}")
 
         
         elif function_code == PacketType.UPGRADE_BUILDING:

@@ -26,6 +26,7 @@ class PacketType(IntEnum):
     UPGRADE_BUILDING = 0x0015
     SELL_RESOURCE = 0x0016
     CRAFT_RESOURCES = 0x0017
+    AGENCY_INVITE = 0x0018
 
 
 class DataGramPacketType(IntEnum):

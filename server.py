@@ -869,6 +869,10 @@ class ControlServer:
         pkt += text.encode("utf-8") + b"\x00"                        # NUL-terminated
         return pkt
 
+    async def send_chat_packet_to_targets(self, pkt: bytes, steam_ids: list[int]) -> None:
+        targets = [s for s in self.sessions if s.alive and int(getattr(s, "steam_id", 0)) in steam_ids]
+        await asyncio.gather(*(t.send(pkt) for t in targets))
+
 
 
     async def tell_everyone_info_about_everyone(self): 

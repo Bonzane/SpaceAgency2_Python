@@ -65,6 +65,11 @@ Sent on request and every 30s to all sessions.
 
 ### JOIN_PUBLIC_AGENCY (0x000D) — client -> server
 Payload: u64 agency_id. Validates public agency and moves player.
+Note: private agencies can be joined if the player has an outstanding invite (see AGENCY_INVITE).
+
+### AGENCY_INVITE (0x0018) — client -> server
+Payload: u64 target_steam_id.
+Requires inviter to be in an agency; server records an invite for that agency. Target receives a NOTIFICATION if online. Invited players may join a private agency via JOIN_PUBLIC_AGENCY while the invite is present.
 
 ### AGENCY_GAMESTATE (0x000E) — server -> client
 Payload: u32 json_len + json blob (see `Agency.generate_gamestate_packet`).
