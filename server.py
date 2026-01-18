@@ -50,11 +50,29 @@ async def update_listing_server(shared_state, http_client, to_url):
             #GATHER RELEVANT INFO
 
 
+            # Force IPv4 host discovery
+            def _ipv4_addr():
+                import ipaddress, socket
+                h = getattr(shared_state, "host", "") or ""
+                try:
+                    if h:
+                        ipaddress.IPv4Address(h)
+                        return h
+                except Exception:
+                    pass
+                try:
+                    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                    s.connect(("8.8.8.8", 80))
+                    addr = s.getsockname()[0]
+                    s.close()
+                    return addr
+                except Exception:
+                    return "127.0.0.1"
 
             #A LOT OF STUFF HERE IS BS'ed. I HOPE I AM NOT DUMB ENOUGH TO
             #FORGET TO COME BACK TO THIS
             data = {
-                "host": "0.0.0.0",      # <- BS, and just to be honest with you, this doesn't do anything. 
+                "host": _ipv4_addr(),      # Force IPv4 address
                                         #  The official listing server ignores this, but if someone for some reason
                                         # wants to make their own listing server and allow you to create listings 
                                         #  from one computer for a server running somewhere else, they might choose to implement this.  
