@@ -772,7 +772,7 @@ class Luna(Planet):
         })
         self.set_resources({
             Resource.MOON_ROCK: 100,
-            Resource.METAL: 20
+            Resource.METAL: 20,
             Resource.PLATINUM: 4
         })
 

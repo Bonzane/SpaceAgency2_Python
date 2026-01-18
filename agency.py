@@ -41,6 +41,13 @@ class Agency:
     exploration_points: int = 0
     publicity_points: int = 0
     experience_points: int = 0
+    quest_state: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    quest_counters: Dict[str, int] = field(default_factory=dict)
+    stat_counters: Dict[str, float] = field(default_factory=dict)
+    steam_stat_state: Dict[str, float] = field(default_factory=dict)
+    steam_achievement_state: Dict[str, bool] = field(default_factory=dict)
+    visited_planets: Set[int] = field(default_factory=set)
+    age_days: float = 0.0
     def __post_init__(self):
         default_building = Building(BuildingType.EARTH_HQ, self.shared, 7, 2, self)
         self.bases_to_buildings[2] = [default_building]
@@ -48,6 +55,424 @@ class Agency:
         self.discovered_planets.add(EARTH_ID)
         self.discovered_planets.add(0)
         self.discovered_planets.add(3)
+        self.visited_planets.add(EARTH_ID)
+
+    def _xp_curve(self) -> Dict[str, float | int]:
+        gd = getattr(self.shared, "game_description", {}) or {}
+        curve = gd.get("xp_level_curve", {}) if isinstance(gd, dict) else {}
+        try:
+            base = float(curve.get("base", 100.0))
+        except Exception:
+            base = 100.0
+        try:
+            growth = float(curve.get("growth", 1.15))
+        except Exception:
+            growth = 1.15
+        try:
+            cap = int(curve.get("cap", 0) or 0)
+        except Exception:
+            cap = 0
+        if base <= 0:
+            base = 100.0
+        if growth <= 0.0:
+            growth = 1.0
+        return {"base": base, "growth": growth, "cap": cap}
+
+    def _xp_need_for_next(self, level: int, curve: Dict[str, float | int]) -> int:
+        base = float(curve["base"])
+        growth = float(curve["growth"])
+        lvl = max(1, int(level))
+        need = base * (growth ** max(0, lvl - 1))
+        return max(1, int(math.floor(need)))
+
+    def _xp_level_progress(self, points: int) -> Dict[str, int]:
+        pts = max(0, int(points))
+        curve = self._xp_curve()
+        cap = int(curve["cap"])
+        level = 1
+        into = pts
+        while True:
+            if cap and level >= cap:
+                return {"level": level, "into": into, "next": 0}
+            need = self._xp_need_for_next(level, curve)
+            if into < need:
+                return {"level": level, "into": into, "next": need}
+            into -= need
+            level += 1
+
+    # === Quests ===
+    def _get_quest_defs(self) -> List[Dict[str, Any]]:
+        gd = getattr(self.shared, "game_description", {}) or {}
+        quests = gd.get("quests", [])
+        if not isinstance(quests, list):
+            return []
+        return [q for q in quests if isinstance(q, dict)]
+
+    def _ensure_quest_state(self) -> Dict[str, Dict[str, Any]]:
+        if not hasattr(self, "quest_state") or not isinstance(self.quest_state, dict):
+            self.quest_state = {}
+        return self.quest_state
+
+    def _get_stat_defs(self) -> List[Dict[str, Any]]:
+        stats = getattr(self.shared, "steam_stats_watchers", []) or []
+        if not isinstance(stats, list):
+            return []
+        return [s for s in stats if isinstance(s, dict)]
+
+    def _ensure_stat_state(self) -> Dict[str, float]:
+        if not hasattr(self, "steam_stat_state") or not isinstance(self.steam_stat_state, dict):
+            self.steam_stat_state = {}
+        return self.steam_stat_state
+
+    def _get_achievement_defs(self) -> List[Dict[str, Any]]:
+        defs = getattr(self.shared, "steam_achievement_watchers", []) or []
+        if not isinstance(defs, list):
+            return []
+        return [a for a in defs if isinstance(a, dict)]
+
+    def _ensure_achievement_state(self) -> Dict[str, bool]:
+        if not hasattr(self, "steam_achievement_state") or not isinstance(self.steam_achievement_state, dict):
+            self.steam_achievement_state = {}
+        return self.steam_achievement_state
+
+    def _quest_metric_value(self, metric: str) -> int:
+        key = str(metric or "").strip().lower()
+        if key == "money":
+            return int(self.get_money())
+        if key == "vessels_built":
+            return len(self.get_all_vessels())
+        if key == "buildings_built":
+            return len(self.get_all_buildings())
+        if key == "planets_discovered":
+            return len(getattr(self, "discovered_planets", []) or [])
+        if key == "moon_landings":
+            return int(getattr(self, "quest_counters", {}).get("moon_landings", 0))
+        if key == "left_solar_system":
+            for v in self.get_all_vessels():
+                chunk = getattr(v, "home_chunk", None)
+                gal = getattr(chunk, "galaxy", None)
+                sys = getattr(chunk, "system", None)
+                if gal == 0 or sys == 0:
+                    return 1
+            return 0
+        if key == "astronauts":
+            return len(getattr(self, "astronauts", {}) or {})
+        if key == "rp":
+            return int(getattr(self, "research_points", 0))
+        if key == "ep":
+            return int(getattr(self, "exploration_points", 0))
+        if key == "pp":
+            return int(getattr(self, "publicity_points", 0))
+        if key == "xp":
+            return int(getattr(self, "experience_points", 0))
+        if key == "blastoff":
+            qc = getattr(self, "quest_counters", {}) or {}
+            return int(qc.get("blastoff", 0))
+        if key == "strap_on_vessels":
+            try:
+                from vessel_components import Components
+            except Exception:
+                Components = None
+            count = 0
+            for v in self.get_all_vessels():
+                try:
+                    comps = getattr(v, "components", []) or []
+                    if any(int(getattr(c, "id", 0)) == int(getattr(Components, "STRAP_ON_BOOSTER", 29)) for c in comps):
+                        count += 1
+                except Exception:
+                    continue
+            qc = getattr(self, "quest_counters", {}) or {}
+            counter = int(qc.get("strap_on_vessels", 0))
+            return int(max(counter, count))
+        if key == "max_probe_inspected_planets":
+            qc = getattr(self, "quest_counters", {}) or {}
+            return int(qc.get("max_probe_inspected_planets", 0))
+        if key == "magnetometer_activated":
+            qc = getattr(self, "quest_counters", {}) or {}
+            return int(qc.get("magnetometer_activated", 0))
+        if key == "rover_moon_landings":
+            qc = getattr(self, "quest_counters", {}) or {}
+            return int(qc.get("rover_moon_landings", 0))
+        if key == "rover_mars_landings":
+            qc = getattr(self, "quest_counters", {}) or {}
+            return int(qc.get("rover_mars_landings", 0))
+        if key == "moon_rock_earth":
+            qc = getattr(self, "quest_counters", {}) or {}
+            return int(qc.get("moon_rock_earth", 0))
+        if key == "agency_income_per_second":
+            return int(getattr(self, "income_per_second", 0))
+        if key == "satellites_in_orbit":
+            try:
+                from vessel_components import Components
+            except Exception:
+                Components = None
+            count = 0
+            for v in self.get_all_vessels():
+                if Components and int(getattr(v, "payload", 0)) != int(Components.COMMUNICATIONS_SATELLITE):
+                    continue
+                if int(getattr(v, "stage", 1)) != 0:
+                    continue
+                if bool(getattr(v, "landed", False)):
+                    continue
+                count += 1
+            return int(count)
+        return 0
+
+    def _steam_stat_metric_value(self, metric: str) -> float:
+        key = str(metric or "").strip().lower()
+        if key == "commsat_in_orbit":
+            key = "satellites_in_orbit"
+        if key == "satellites_in_orbit":
+            try:
+                from vessel_components import Components
+            except Exception:
+                Components = None
+            count = 0
+            for v in self.get_all_vessels():
+                if Components and int(getattr(v, "payload", 0)) != int(Components.COMMUNICATIONS_SATELLITE):
+                    continue
+                if int(getattr(v, "stage", 1)) != 0:
+                    continue
+                if bool(getattr(v, "landed", False)):
+                    continue
+                home = getattr(v, "home_planet", None)
+                atm = float(getattr(home, "atmosphere_km", 0.0)) if home else 0.0
+                if float(getattr(v, "altitude", 0.0)) <= atm + 1e-6:
+                    continue
+                count += 1
+            return float(count)
+        if key == "stranded_astronauts":
+            return float(getattr(self, "stat_counters", {}).get("stranded_astronauts", 0))
+        if key == "longest_manned_mission_days":
+            return float(getattr(self, "stat_counters", {}).get("longest_manned_mission_days", 0.0))
+        if key == "oldest_agency_age_days":
+            return float(getattr(self, "age_days", 0.0))
+        if key == "max_satellite_level":
+            return float(getattr(self, "stat_counters", {}).get("max_satellite_level", 0))
+        if key == "speed_record_mach":
+            return float(getattr(self, "stat_counters", {}).get("speed_record_mach", 0.0))
+        if key == "cell_tower_level":
+            return float(getattr(self, "stat_counters", {}).get("cell_tower_level", 0))
+        if key == "vessels_launched":
+            return float(getattr(self, "stat_counters", {}).get("vessels_launched", 0))
+        if key == "planets_visited":
+            return float(len(getattr(self, "visited_planets", set()) or set()))
+        return 0.0
+
+    def _achievement_metric_value(self, metric: str) -> float:
+        return float(self._steam_stat_metric_value(metric))
+
+    def _resolve_achievement_metric(self, metric: str, stat_name: str) -> str:
+        raw_metric = str(metric or "").strip()
+        raw_stat = str(stat_name or "").strip()
+        if raw_metric and not raw_stat:
+            return raw_metric
+        if raw_metric and raw_stat:
+            return raw_metric
+        if not raw_metric and not raw_stat:
+            return ""
+        # If a stat name is provided, map it back to a metric when possible.
+        stat_defs = self._get_stat_defs()
+        by_stat = {str(s.get("stat_name", "")).strip(): str(s.get("metric", "")).strip() for s in stat_defs}
+        if raw_stat in by_stat and by_stat[raw_stat]:
+            return by_stat[raw_stat]
+        # Accept stat-like metric (e.g., "stat_speed_record_mach") and map if known.
+        if raw_stat in by_stat:
+            return by_stat[raw_stat]
+        return raw_stat
+
+    def record_quest_metric(self, metric: str, delta: int = 1) -> None:
+        key = str(metric or "").strip().lower()
+        if not key:
+            return
+        if not hasattr(self, "quest_counters") or not isinstance(self.quest_counters, dict):
+            self.quest_counters = {}
+        cur = int(self.quest_counters.get(key, 0))
+        self.quest_counters[key] = max(0, cur + int(delta))
+
+    def update_quest_progress(self) -> List[Dict[str, Any]]:
+        """
+        Recompute quest progress and return any newly completed quest defs.
+        """
+        completed_now = []
+        state = self._ensure_quest_state()
+        for q in self._get_quest_defs():
+            qid = str(q.get("id", "")).strip()
+            if not qid:
+                continue
+            target = int(q.get("target", 0) or 0)
+            metric = str(q.get("metric", "")).strip()
+            progress = self._quest_metric_value(metric)
+
+            entry = state.get(qid, {})
+            # keep progress monotonic once recorded
+            prev_progress = int(entry.get("progress", 0) or 0)
+            entry["progress"] = max(prev_progress, int(progress))
+            # once completed, stay completed
+            previously_completed = bool(entry.get("completed", False))
+            now_completed = (progress >= target) if target > 0 else True
+            entry["completed"] = previously_completed or now_completed
+            entry.setdefault("claimed", False)
+            state[qid] = entry
+
+            if entry["completed"] and not entry.get("claimed"):
+                completed_now.append(q)
+        return completed_now
+
+    def update_steam_stats(self) -> List[tuple[str, float, Dict[str, Any]]]:
+        """
+        Return stat updates (stat_name, value, meta) for watchers whose values changed.
+        """
+        updates: List[tuple[str, float, Dict[str, Any]]] = []
+        state = self._ensure_stat_state()
+        for s in self._get_stat_defs():
+            stat_name = str(s.get("stat_name", "")).strip()
+            metric = str(s.get("metric", "")).strip()
+            mode = str(s.get("mode", "set")).strip().lower()
+            if not stat_name or not metric:
+                continue
+            value = int(self._steam_stat_metric_value(metric))
+            last = state.get(stat_name)
+            if mode == "max" and last is not None:
+                value = max(value, int(float(last)))
+            if last is None or value != float(last):
+                updates.append((stat_name, value, s))
+                state[stat_name] = value
+        return updates
+
+    def update_steam_achievements(self) -> List[Dict[str, Any]]:
+        """
+        Return achievement defs that are newly completed and not yet unlocked.
+        """
+        unlocked: List[Dict[str, Any]] = []
+        state = self._ensure_achievement_state()
+        for a in self._get_achievement_defs():
+            aid = str(a.get("id", "")).strip()
+            if not aid:
+                continue
+            metric = self._resolve_achievement_metric(
+                a.get("metric", ""),
+                a.get("stat_name", "") or a.get("progress_stat", ""),
+            )
+            target = float(a.get("target", 0) or 0)
+            if not metric:
+                continue
+            progress = self._achievement_metric_value(metric)
+            if progress < target:
+                continue
+            if state.get(aid):
+                continue
+            unlocked.append(a)
+        return unlocked
+
+    def mark_achievement_unlocked(self, achievement_id: str) -> None:
+        state = self._ensure_achievement_state()
+        aid = str(achievement_id or "").strip()
+        if not aid:
+            return
+        state[aid] = True
+
+    def mark_quest_claimed(self, quest_id: str) -> None:
+        state = self._ensure_quest_state()
+        qid = str(quest_id or "").strip()
+        if not qid:
+            return
+        entry = state.get(qid, {})
+        entry["claimed"] = True
+        state[qid] = entry
+
+    def record_stat_counter(self, stat_key: str, delta: float = 1.0) -> None:
+        key = str(stat_key or "").strip().lower()
+        if not key:
+            return
+        if not hasattr(self, "stat_counters") or not isinstance(self.stat_counters, dict):
+            self.stat_counters = {}
+        cur = float(self.stat_counters.get(key, 0.0))
+        self.stat_counters[key] = max(0.0, cur + float(delta))
+
+    def update_stat_records(self) -> None:
+        """
+        Update rolling record stats (max satellite level, speed record, mission time, cell tower).
+        """
+        if not hasattr(self, "stat_counters") or not isinstance(self.stat_counters, dict):
+            self.stat_counters = {}
+
+        # Longest manned mission time (days)
+        max_manned = 0.0
+        for v in self.get_all_vessels():
+            max_manned = max(max_manned, float(getattr(v, "manned_mission_time_days", 0.0)))
+        self.stat_counters["longest_manned_mission_days"] = max(
+            float(self.stat_counters.get("longest_manned_mission_days", 0.0)),
+            max_manned,
+        )
+
+        # Speed record (mach)
+        MACH_KM_S = 0.343
+        max_mach = 0.0
+        for v in self.get_all_vessels():
+            vx, vy = getattr(v, "velocity", (0.0, 0.0))
+            speed = math.hypot(float(vx), float(vy))
+            max_mach = max(max_mach, speed / MACH_KM_S if MACH_KM_S > 0 else 0.0)
+        self.stat_counters["speed_record_mach"] = max(
+            float(self.stat_counters.get("speed_record_mach", 0.0)),
+            max_mach,
+        )
+
+        # Max satellite level (upgrade tier)
+        max_sat_tier = 0
+        try:
+            from vessel_components import Components
+            from upgrade_tree import UPGRADE_TREES_BY_PAYLOAD
+        except Exception:
+            Components = None
+            UPGRADE_TREES_BY_PAYLOAD = {}
+        for v in self.get_all_vessels():
+            if Components and int(getattr(v, "payload", 0)) != int(Components.COMMUNICATIONS_SATELLITE):
+                continue
+            unlocked = getattr(v, "current_payload_unlocked", lambda: set())()
+            tree = UPGRADE_TREES_BY_PAYLOAD.get(int(getattr(v, "payload", 0)), {})
+            tier = 0
+            for uid in unlocked:
+                node = tree.get(int(uid))
+                if node:
+                    tier = max(tier, int(getattr(node, "tier", 0)))
+            max_sat_tier = max(max_sat_tier, tier)
+        self.stat_counters["max_satellite_level"] = max(
+            float(self.stat_counters.get("max_satellite_level", 0)),
+            max_sat_tier,
+        )
+
+        # Max cell tower level
+        try:
+            from buildings import BuildingType
+        except Exception:
+            BuildingType = None
+        max_tower = 0
+        for b in self.get_all_buildings():
+            btype = getattr(b, "building_type", getattr(b, "type", None))
+            if BuildingType and int(btype) != int(BuildingType.NETWORK_TOWER):
+                continue
+            max_tower = max(max_tower, int(getattr(b, "level", 1)))
+        self.stat_counters["cell_tower_level"] = max(
+            float(self.stat_counters.get("cell_tower_level", 0)),
+            max_tower,
+        )
+
+    def quest_state_payload(self) -> Dict[str, Dict[str, Any]]:
+        state = self._ensure_quest_state()
+        payload = {}
+        for q in self._get_quest_defs():
+            qid = str(q.get("id", "")).strip()
+            if not qid:
+                continue
+            entry = state.get(qid, {})
+            payload[qid] = {
+                "progress": int(entry.get("progress", 0)),
+                "target": int(q.get("target", 0) or 0),
+                "completed": bool(entry.get("completed", False)),
+                "claimed": bool(entry.get("claimed", False)),
+            }
+        return payload
 
     def discover_planet(self, planet_id: int, notify: bool = True) -> bool:
         """Mark a planet as discovered for this agency (no base required)
@@ -285,6 +710,8 @@ class Agency:
         return float(self.base_multipliers.get(int(planet_id or 0), 1.0))
     
     def update_attributes(self) -> None:
+        # remember previous to detect changes that require vessel refresh
+        prev_attrs = dict(getattr(self, "attributes", {}) or {})
         # 1) start from defaults
         attrs = dict(self.shared.agency_default_attributes)
 
@@ -322,6 +749,10 @@ class Agency:
                 max_tier = effects.get("probe_max_upgrade_tier")
                 if isinstance(max_tier, int) and max_tier > attrs.get("probe_max_upgrade_tier", 0):
                     attrs["probe_max_upgrade_tier"] = max_tier
+                # --- thermal resistance bonus ---
+                add_tr = float(effects.get("add_thermal_resistance", 0.0))
+                if add_tr:
+                    attrs["thermal_resistance_bonus"] = attrs.get("thermal_resistance_bonus", 0.0) + add_tr
                 # --- per-planet storage capacity ---
                 add_storage = int(effects.get("add_base_storage", 0))
                 if add_storage:
@@ -335,6 +766,17 @@ class Agency:
 
         #4) Also do the planet networking multiplier
         self.recompute_networking_multipliers()
+
+        # 5) If thermal bonus changed, refresh vessel stats once
+        try:
+            if attrs.get("thermal_resistance_bonus", 0.0) != prev_attrs.get("thermal_resistance_bonus", 0.0):
+                for v in self.get_all_vessels():
+                    try:
+                        v.calculate_vessel_stats()
+                    except Exception:
+                        continue
+        except Exception:
+            pass
 
     def ensure_min_astronauts_on_planet(self, planet_id: int, min_count: int = 3) -> int:
         """
@@ -716,6 +1158,11 @@ class Agency:
     # === Serialization ===
 
     def generate_gamestate_packet(self) -> bytes:
+        rp_prog = self._xp_level_progress(self.research_points)
+        ep_prog = self._xp_level_progress(self.exploration_points)
+        pp_prog = self._xp_level_progress(self.publicity_points)
+        xp_prog = self._xp_level_progress(self.experience_points)
+
         bases_serialized = {
             base_id: [building.to_json() for building in buildings]
             for base_id, buildings in self.bases_to_buildings.items()
@@ -763,11 +1210,30 @@ class Agency:
             "base_multipliers": base_mults_diff,
             "astronauts": astronauts_serialized,    
             "astros_by_planet": astros_by_planet,
+            "quest_state": self.quest_state_payload(),
             "discovered_planets": sorted(int(pid) for pid in self.discovered_planets),
             "rp": int(self.research_points),
             "ep": int(self.exploration_points),
             "pp": int(self.publicity_points),
             "xp": int(self.experience_points),
+            "levels": {
+                "rp": int(rp_prog["level"]),
+                "ep": int(ep_prog["level"]),
+                "pp": int(pp_prog["level"]),
+                "xp": int(xp_prog["level"]),
+            },
+            "next_level": {
+                "rp": int(rp_prog["next"]),
+                "ep": int(ep_prog["next"]),
+                "pp": int(pp_prog["next"]),
+                "xp": int(xp_prog["next"]),
+            },
+            "progress": {
+                "rp": int(rp_prog["into"]),
+                "ep": int(ep_prog["into"]),
+                "pp": int(pp_prog["into"]),
+                "xp": int(xp_prog["into"]),
+            },
             "flag": int(self.flag),
         }
 
@@ -787,4 +1253,3 @@ class Agency:
             "pp": int(self.publicity_points),
             "xp": int(self.experience_points),
         }
-

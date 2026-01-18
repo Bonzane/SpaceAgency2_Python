@@ -252,6 +252,27 @@ class Game:
                     "ep": int(getattr(agency, "exploration_points", 0)),
                     "pp": int(getattr(agency, "publicity_points", 0)),
                     "xp": int(getattr(agency, "experience_points", 0)),
+                    "quest_state": {
+                        str(qid): {
+                            "progress": int(state.get("progress", 0)),
+                            "completed": bool(state.get("completed", False)),
+                            "claimed": bool(state.get("claimed", False)),
+                        }
+                        for qid, state in getattr(agency, "quest_state", {}).items()
+                        if isinstance(state, dict)
+                    },
+                    "quest_counters": {
+                        str(k): int(v)
+                        for k, v in getattr(agency, "quest_counters", {}).items()
+                        if isinstance(k, str)
+                    },
+                    "stat_counters": {
+                        str(k): float(v)
+                        for k, v in getattr(agency, "stat_counters", {}).items()
+                        if isinstance(k, str)
+                    },
+                    "visited_planets": sorted(int(pid) for pid in getattr(agency, "visited_planets", set()) or set()),
+                    "age_days": float(getattr(agency, "age_days", 0.0)),
 
                 })
 
@@ -317,7 +338,41 @@ class Game:
                     agency.research_points    = int(a.get("rp", getattr(agency, "research_points", 0)))
                     agency.exploration_points = int(a.get("ep", getattr(agency, "exploration_points", 0)))
                     agency.publicity_points   = int(a.get("pp", getattr(agency, "publicity_points", 0)))
-                    agency.experience_points  = int(a.get("xp", getattr(agency, "experience_points", 0)))                   
+                    agency.experience_points  = int(a.get("xp", getattr(agency, "experience_points", 0)))
+
+                    raw_quests = a.get("quest_state", {}) or {}
+                    if isinstance(raw_quests, dict):
+                        agency.quest_state = {
+                            str(qid): {
+                                "progress": int(qv.get("progress", 0)) if isinstance(qv, dict) else 0,
+                                "completed": bool(qv.get("completed", False)) if isinstance(qv, dict) else False,
+                                "claimed": bool(qv.get("claimed", False)) if isinstance(qv, dict) else False,
+                            }
+                            for qid, qv in raw_quests.items()
+                        }
+                    else:
+                        agency.quest_state = {}
+
+                    raw_counters = a.get("quest_counters", {}) or {}
+                    if isinstance(raw_counters, dict):
+                        agency.quest_counters = {
+                            str(k): int(v) for k, v in raw_counters.items()
+                        }
+                    else:
+                        agency.quest_counters = {}
+
+                    raw_stats = a.get("stat_counters", {}) or {}
+                    if isinstance(raw_stats, dict):
+                        agency.stat_counters = {str(k): float(v) for k, v in raw_stats.items()}
+                    else:
+                        agency.stat_counters = {}
+
+                    raw_visited = a.get("visited_planets", []) or []
+                    try:
+                        agency.visited_planets = set(int(pid) for pid in raw_visited)
+                    except Exception:
+                        agency.visited_planets = set()
+                    agency.age_days = float(a.get("age_days", getattr(agency, "age_days", 0.0)))
 
                     raw_inv = a.get("base_inventories", {}) or {}
                     raw_disc = a.get("discovered_planets", []) or []
@@ -548,8 +603,3 @@ class Game:
         with open(chunk_path, "w") as file:
             file.write("0")
         print(f"✅ Created Milky Way Starmap at {chunk_path}")
-
-
-
-
-

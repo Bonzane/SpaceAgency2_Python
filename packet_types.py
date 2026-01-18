@@ -51,6 +51,11 @@ class DataGramPacketType(IntEnum):
     CARGO_REMOVE = 0x13
     CARGO_STATE = 0x14
     SIGNAL_DESTROY = 0x15
+    XP_ORB = 0x16
+    CHANGE_ASTRONAUT_NAME = 0x17
+    CAMERA_CONTEXT = 0x18
+    CAMERA_CONTEXT_REPLY = 0x19
+    REGION_NAME_REQUEST = 0x20
 
 
 class ChatMessage(IntEnum):
@@ -63,3 +68,4 @@ class ChatMessage(IntEnum):
     ADMINISTRATOR = 0x06
     PLAYERJOIN = 0x07
     PLAYERLEAVE = 0x08
+    SERVERGENERAL = 0x09

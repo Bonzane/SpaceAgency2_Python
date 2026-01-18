@@ -17,6 +17,8 @@ class PayloadBehavior(ABC):
 
     def __init__(self, vessel):
         self.vessel = vessel
+        # generic orb timer helper if needed by subclasses
+        self._orb_accum = 0.0
 
     def on_attach(self): pass                 # when payload becomes current (stage==0)
     def on_detach(self): pass                 # when staging drops it
@@ -110,6 +112,9 @@ class CommsSatellite(PayloadBehavior):
             v.credit_income(extra_payout)
 
 class SpaceTelescope(PayloadBehavior):
+    def __init__(self, vessel):
+        super().__init__(vessel)
+        self._orb_accum = 0.0
 
     def _discover_targets(self, objs):
         v = self.vessel
@@ -199,6 +204,23 @@ class SpaceTelescope(PayloadBehavior):
         if payout > 0.0:
             agency.distribute_money(payout)
             v.credit_income(payout)
+
+        # Orb drip: 1 EP per minute
+        # Real seconds, not sim-tick dt
+        self._orb_accum += seconds
+        if self._orb_accum >= 60.0:
+            try:
+                udp = getattr(shared, "udp_server", None)
+                if udp:
+                    udp.send_xp_orb_to_agency(
+                        agency_id=int(getattr(agency, "id64", 0)),
+                        point_type=1,  # EP
+                        source_kind=0,
+                        vessel_id=int(getattr(v, "object_id", 0)),
+                    )
+            except Exception as e:
+                print(f"⚠️ telescope orb send failed: {e}")
+            self._orb_accum = 0.0
 
         # (2) RCS pointing (no fuel)
         self._apply_rcs_pointing(seconds)
@@ -293,6 +315,9 @@ class Probe(PayloadBehavior):
     Perijove: ×2 income while within 4×R of a gas giant.
     AACS:     ×2 income if pointing within 5° of home planet.
     """
+    def __init__(self, vessel):
+        super().__init__(vessel)
+        self._orb_accum = 0.0
 
     def _maybe_discover(self, body):
         """Discover any body we meaningfully observed/inspected."""
@@ -483,6 +508,25 @@ class Probe(PayloadBehavior):
             agency.distribute_money(payout)
             v.credit_income(payout)
 
+        # Orb drip: EP per visited planet per minute
+        visited = len(set(getattr(v, "planets_visited", []) or []))
+        if visited > 0:
+            self._orb_accum += seconds
+            if self._orb_accum >= 60.0:
+                self._orb_accum = 0.0
+                try:
+                    udp = getattr(v.shared, "udp_server", None)
+                    if udp:
+                        for _ in range(visited):
+                            udp.send_xp_orb_to_agency(
+                                agency_id=int(getattr(agency, "id64", 0)),
+                                point_type=1,  # EP
+                                source_kind=0,
+                                vessel_id=int(getattr(v, "object_id", 0)),
+                            )
+                except Exception as e:
+                    print(f"⚠️ probe orb send failed: {e}")
+
 
 SUN_RADIUS_KM = 696_340.0
 
@@ -495,6 +539,10 @@ class SolarOrbiter(PayloadBehavior):
       - decays below 1 beyond 0.5 AU toward 0
       - clamped to [0, 20]
     """
+
+    def __init__(self, vessel):
+        super().__init__(vessel)
+        self._orb_accum = 0.0
 
     # Tunables (per AU)
     K_NEAR = 5.0   # curvature inside 0.5 AU (20 -> 1)
@@ -560,6 +608,31 @@ class SolarOrbiter(PayloadBehavior):
             agency.distribute_money(payout)
             v.credit_income(payout)
 
+        # Orb drip: RP per minute; hotter (>100C) yields 3 RP/min
+        self._orb_accum += seconds
+        if self._orb_accum >= 60.0:
+            self._orb_accum = 0.0
+            temp_c = 0.0
+            try:
+                dist_km = math.hypot(float(v.position[0]), float(v.position[1]))
+                r_au = max(1e-6, dist_km / float(AU_KM))
+                temp_c = max(0.0, 500.0 / r_au - 273.0)
+            except Exception:
+                temp_c = 0.0
+            rp_per_min = 3 if temp_c > 100.0 else 1
+            try:
+                udp = getattr(shared, "udp_server", None)
+                if udp:
+                    for _ in range(rp_per_min):
+                        udp.send_xp_orb_to_agency(
+                            agency_id=int(getattr(agency, "id64", 0)),
+                            point_type=0,  # RP
+                            source_kind=0,
+                            vessel_id=int(getattr(v, "object_id", 0)),
+                        )
+            except Exception as e:
+                print(f"⚠️ solar orb send failed: {e}")
+
 
 class LunarLander:
     """
@@ -571,6 +644,7 @@ class LunarLander:
     def __init__(self, vessel):
         self.vessel = vessel
         self.payload_id = int(getattr(vessel, "payload", 0))
+        self._orb_landed = set()
 
     def on_attach(self):
         pass
@@ -586,6 +660,24 @@ class LunarLander:
         shared = getattr(v, "shared", None)
         if not (planet and shared):
             return
+
+        # One-time EP orbs on first land per planet
+        pid = int(getattr(planet, "object_id", 0) or 0)
+        if pid and pid not in self._orb_landed:
+            self._orb_landed.add(pid)
+            try:
+                udp = getattr(shared, "udp_server", None)
+                agency = shared.agencies.get(v.agency_id) if hasattr(shared, "agencies") else None
+                if udp and agency:
+                    for _ in range(10):
+                        udp.send_xp_orb_to_agency(
+                            agency_id=int(getattr(agency, "id64", 0)),
+                            point_type=1,  # EP
+                            source_kind=0,
+                            vessel_id=int(getattr(v, "object_id", 0)),
+                        )
+            except Exception as e:
+                print(f"⚠️ lunar lander orb send failed: {e}")
 
         # Moved-from-Vessel mission hook (auto-build if declared on a component)
         self._maybe_build_on_land(planet)
@@ -920,6 +1012,7 @@ class Rover(PayloadBehavior):
         super().__init__(vessel)
         self._accum = 0.0
         self._notified_full = False  # avoid spamming a "full" notice
+        self._orb_accum = 0.0
 
     def on_attach(self):
         # ensure cargo dict exists
@@ -931,6 +1024,7 @@ class Rover(PayloadBehavior):
         # must be active payload, actually landed, and have a planet
         if v.stage != 0 or not bool(getattr(v, "landed", False)):
             self._accum = 0.0
+            self._orb_accum = 0.0
             self._notified_full = False
             return
         planet = getattr(v, "home_planet", None)
@@ -944,9 +1038,11 @@ class Rover(PayloadBehavior):
             print("No planet for rover")
             return
 
-        # convert to real seconds
-        seconds = dt
+        # Convert sim dt to real seconds (respect game speed)
+        gs = float(getattr(getattr(v, "shared", None), "gamespeed", 1.0) or 1.0)
+        seconds = float(dt) / max(1e-9, gs)
         self._accum += seconds
+        self._orb_accum += seconds
         if self._accum < 10.0:
             return
         # run roughly once per second, even if we accumulated multiple seconds
@@ -997,9 +1093,23 @@ class Rover(PayloadBehavior):
             if not v.landed or not getattr(v, "home_planet", None):
                 return
 
-            # Real seconds, not sim seconds
-            gs = float(getattr(v.shared, "gamespeed", 1.0))
-            seconds = dt / max(1e-9, gs)
+        # Orb drip: 2 RP per minute while roaming
+        if self._orb_accum >= 60.0:
+            self._orb_accum = 0.0
+            try:
+                shared = getattr(v, "shared", None)
+                udp = getattr(shared, "udp_server", None) if shared else None
+                agency = shared.agencies.get(v.agency_id) if shared else None
+                if udp and agency:
+                    for _ in range(2):
+                        udp.send_xp_orb_to_agency(
+                            agency_id=int(getattr(agency, "id64", 0)),
+                            point_type=0,  # RP
+                            source_kind=0,
+                            vessel_id=int(getattr(v, "object_id", 0)),
+                        )
+            except Exception as e:
+                print(f"⚠️ rover orb send failed: {e}")
 
         # 1) Resolve desired speed: deg/s wins; else convert km/s → deg/s; else default.
         try:

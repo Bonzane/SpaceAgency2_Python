@@ -116,6 +116,7 @@ class Vessel(PhysicsObject):
     cargo_capacity: int = 0
     cargo: Dict[int, int] = field(default_factory=dict)
     landing_progress: float = 0.0
+    manned_mission_time_days: float = 0.0
 
     #---Telescopes---
     telescope_rcs_angle: float = 0.0
@@ -551,11 +552,18 @@ class Vessel(PhysicsObject):
         self.solar_power = 0.0
         self.nuclear_power = 0.0
         self.armor = 0.0
+        self.aerodynamics = 0.0
 
         self.systems.clear()
 
         # reset thermal resistance
-        base_tau = 100.0             
+        base_tau = 100.0
+        try:
+            ag = getattr(self.shared, "agencies", {}).get(int(self.agency_id))
+            if ag and hasattr(ag, "attributes"):
+                base_tau += float(getattr(ag, "attributes", {}).get("thermal_resistance_bonus", 0.0) or 0.0)
+        except Exception:
+            pass
         attached_tau_bonus = 0.0 
 
         #cargo
@@ -630,6 +638,7 @@ class Vessel(PhysicsObject):
                 self.solar_power += float(attrs.get("solar-power", 0.0))
                 self.nuclear_power += float(attrs.get("nuclear-power", 0.0)) * 0.1
                 self.armor += float(attrs.get("armor", 0.0))
+                self.aerodynamics += float(attrs.get("aerodynamics", 0.0))
                 self.cargo_capacity += int(attrs.get("cargo-capacity", 0) or 0)
                 self.max_warp = max(
                     float(getattr(self, "max_warp", 0.0)),
@@ -1240,16 +1249,33 @@ class Vessel(PhysicsObject):
                 )
 
         # --- identify and spawn jettisoned parts for components no longer attached
+        drop_count = 0
         try:
             comps_to_drop = [(idx, c) for idx, c in enumerate(self.components)
                             if int(getattr(c, "stage", 0)) > self.stage]
+            drop_count = len(comps_to_drop)
             for idx, comp in comps_to_drop:
                 self._spawn_jettisoned_component(comp, idx)
         except Exception as e:
             print(f"⚠️ spawn jettisoned components failed: {e}")
+            drop_count = 0
 
         # Remove components that no longer belong (also recomputes stats & CoM)
         self.drop_components()
+
+        if drop_count > 0:
+            agency = getattr(self.shared, "agencies", {}).get(int(self.agency_id))
+            if agency:
+                agency.experience_points = int(getattr(agency, "experience_points", 0)) + drop_count
+                udp = getattr(self.shared, "udp_server", None)
+                if udp:
+                    for _ in range(drop_count):
+                        udp.send_xp_orb_to_agency(
+                            agency_id=int(agency.id64),
+                            point_type=3,
+                            source_kind=0,
+                            vessel_id=int(self.object_id),
+                        )
 
         # --- NEW: after CoM updates (now == payload local center), snap origin to saved world pos
         if self.stage == 0 and payload_world_pre is not None:
@@ -1560,6 +1586,17 @@ class Vessel(PhysicsObject):
         samples, net_dir, net_str = self._compute_magnetometer_field()
         if not samples:
             return
+
+        # Quest metric: magnetometer activated (once per vessel)
+        if not getattr(self, "_magnetometer_quest_flag", False):
+            try:
+                agency = getattr(self.shared, "agencies", {}).get(int(self.agency_id))
+                if agency and hasattr(agency, "record_quest_metric"):
+                    agency.record_quest_metric("magnetometer_activated", 1)
+                    self._magnetometer_quest_flag = True
+            except Exception as e:
+                print(f"⚠️ magnetometer quest update failed: {e}")
+
         pkt = self._build_magnetometer_packet(net_dir, net_str, samples)
         self._send_udp_to_controller(pkt)
 
@@ -1603,6 +1640,12 @@ class Vessel(PhysicsObject):
         else:
             self.update_altitude(dt)
 
+        # Track manned mission time in in-game days while in space
+        if self.landed:
+            self.manned_mission_time_days = 0.0
+        elif self.astronauts_onboard:
+            self.manned_mission_time_days += max(0.0, float(dt)) / 86400.0
+
         # 2. Apply rotation
         self.rotation += self.rotation_velocity * dt
 
@@ -1623,9 +1666,10 @@ class Vessel(PhysicsObject):
         self._tick_magnetometer(scaled_dt)
 
         #4 - Charge Power
+        solar_eff = 0.0
         if self.solar_power > 0.0:
-            eff = self.solar_efficiency_from_distance(self.position)
-            self._charge_power(self.solar_power * scaled_dt * eff)
+            solar_eff = self.solar_efficiency_from_distance(self.position)
+            self._charge_power(self.solar_power * scaled_dt * solar_eff)
 
         if self.nuclear_power > 0.0:
             self._charge_power(self.nuclear_power * scaled_dt)
@@ -1660,12 +1704,15 @@ class Vessel(PhysicsObject):
         chunkpacket += struct.pack('<f', force)
         chunkpacket += struct.pack('<B', self.landed)
         chunkpacket += struct.pack('<f', self.landing_progress)
+        # vertical rate (km/s); positive = ascending, negative = descending
+        chunkpacket += struct.pack('<f', float(self.z_velocity))
         chunkpacket += struct.pack('<f', self.hull_integrity)
         chunkpacket += struct.pack('<f', self.liquid_fuel_kg)
         chunkpacket += struct.pack('<f', self.liquid_fuel_capacity_kg)
         chunkpacket += struct.pack('<H', self.cargo_capacity)
         chunkpacket += struct.pack('<f', self.power)
         chunkpacket += struct.pack('<f', self.power_capacity)
+        chunkpacket += struct.pack('<f', solar_eff)
         chunkpacket += struct.pack('<f', self.maximum_operating_temperature_c)
         chunkpacket += struct.pack('<f', self.current_temperature_c)
         chunkpacket += struct.pack('<f', self.ambient_temp_K)
@@ -1824,7 +1871,7 @@ class Vessel(PhysicsObject):
         BASE = 0.5
         FADE_SHAPE = 2.0
         atmos_factor = BASE + (1.0 - BASE) * (dens ** FADE_SHAPE)
-        THRUST_LIFT_ACCEL = 0.130
+        THRUST_LIFT_ACCEL = 0.130 * (1.0 + 0.05 * float(getattr(self, "aerodynamics", 0.0)))
         a_up = (THRUST_LIFT_ACCEL * acc_proxy * atmos_factor) if in_atmo else 0.0
         MAX_SAFE_TOUCHDOWN = 1.2
 
@@ -1839,6 +1886,7 @@ class Vessel(PhysicsObject):
             if tau > 1e-6:
                 self.z_velocity += (-self.z_velocity) * (1.0 - math.exp(-dt / tau))
 
+        was_above_atm = self.altitude >= atm_height - 1e-6
         # Integrate vertical motion
         a_z = a_up - a_down
         self.z_velocity += a_z * dt
@@ -1850,6 +1898,17 @@ class Vessel(PhysicsObject):
             self.altitude = atm_height
             if self.z_velocity > 0.0:
                 self.z_velocity = 0.0
+
+        # Quest: first time reaching space (top of atmosphere) per vessel
+        now_above = self.altitude >= atm_height - 1e-6
+        if not was_above_atm and now_above and not getattr(self, "_quest_blastoff_done", False):
+            try:
+                agency = getattr(self.shared, "agencies", {}).get(int(self.agency_id))
+                if agency and hasattr(agency, "record_quest_metric"):
+                    agency.record_quest_metric("blastoff", 1)
+                    self._quest_blastoff_done = True
+            except Exception as e:
+                print(f"⚠️ blastoff quest update failed: {e}")
 
         # --- Count down the takeoff grace window
         if getattr(self, "unland_grace_time_s", 0.0) > 0.0:
@@ -2094,6 +2153,68 @@ class Vessel(PhysicsObject):
         if pid > 0 and pid not in set(int(x) for x in (self.planets_visited or [])):
             self.planets_visited.append(pid)
         self.last_landed_body_id = pid
+
+        # Agency-level visited planets tracking
+        try:
+            agency = getattr(self.shared, "agencies", {}).get(int(self.agency_id))
+            if agency is not None:
+                if not hasattr(agency, "visited_planets") or agency.visited_planets is None:
+                    agency.visited_planets = set()
+                if pid > 0 and pid not in agency.visited_planets:
+                    agency.visited_planets.add(pid)
+        except Exception as e:
+            print(f"⚠️ visited planet tracking failed: {e}")
+
+        # Probe planet inspection tracking (per-probe max)
+        try:
+            from vessel_components import Components
+        except Exception:
+            Components = None
+        try:
+            if Components and int(getattr(self, "payload", 0)) == int(getattr(Components, "PROBE", 11)):
+                if not hasattr(self, "inspected_planets") or self.inspected_planets is None:
+                    self.inspected_planets = set()
+                if pid > 0:
+                    self.inspected_planets.add(pid)
+                agency = getattr(self.shared, "agencies", {}).get(int(self.agency_id))
+                if agency and hasattr(agency, "quest_counters"):
+                    qc = agency.quest_counters
+                    if not isinstance(qc, dict):
+                        qc = {}
+                    qc["max_probe_inspected_planets"] = max(
+                        int(qc.get("max_probe_inspected_planets", 0)),
+                        len(self.inspected_planets),
+                    )
+                    agency.quest_counters = qc
+        except Exception as e:
+            print(f"⚠️ probe inspection tracking failed: {e}")
+
+        # quest metric: moon landings
+        try:
+            if bool(getattr(self.home_planet, "is_moon", False)):
+                agency = getattr(self.shared, "agencies", {}).get(int(self.agency_id))
+                if agency and hasattr(agency, "record_quest_metric"):
+                    agency.record_quest_metric("moon_landings", 1)
+                    # Rover-specific moon landing
+                    try:
+                        from vessel_components import Components
+                    except Exception:
+                        Components = None
+                    if Components and int(getattr(self, "payload", 0)) == int(getattr(Components, "ROVER", 27)):
+                        agency.record_quest_metric("rover_moon_landings", 1)
+            # Mars rover landing
+            try:
+                pname = str(getattr(self.home_planet, "name", "")).strip().lower()
+                if pname == "mars":
+                    agency = getattr(self.shared, "agencies", {}).get(int(self.agency_id))
+                    if agency and hasattr(agency, "record_quest_metric"):
+                        from vessel_components import Components
+                        if Components and int(getattr(self, "payload", 0)) == int(getattr(Components, "ROVER", 27)):
+                            agency.record_quest_metric("rover_mars_landings", 1)
+            except Exception:
+                pass
+        except Exception as e:
+            print(f"⚠️ moon landing quest update failed: {e}")
 
 
 
@@ -2505,6 +2626,12 @@ class Vessel(PhysicsObject):
         # 2) Remove from agency
         agency = self.shared.agencies.get(self.agency_id)
         if agency is not None:
+            try:
+                stranded = len(getattr(self, "astronauts_onboard", []) or [])
+                if stranded > 0 and hasattr(agency, "record_stat_counter"):
+                    agency.record_stat_counter("stranded_astronauts", stranded)
+            except Exception as e:
+                print(f"⚠️ stranded astronaut stat update failed: {e}")
             agency.remove_vessel(self)
 
         # 3) Remove from chunk (and id map)
@@ -2817,6 +2944,20 @@ def construct_vessel_from_request(shared, player, vessel_request_data) -> Vessel
         for comp, st in zip(components, stages):
             setattr(comp, "stage", st)
 
+        # Quest: mark any vessel that includes strap-on boosters
+        try:
+            from vessel_components import Components
+        except Exception:
+            Components = None
+        has_strap_on = False
+        if Components:
+            try:
+                has_strap_on = any(int(getattr(comp, "id", 0)) == int(getattr(Components, "STRAP_ON_BOOSTER", 29)) for comp in components)
+            except Exception:
+                has_strap_on = False
+        if has_strap_on and hasattr(agency, "record_quest_metric"):
+            agency.record_quest_metric("strap_on_vessels", 1)
+
 
         center_component = components[0]
         vessel = Vessel(
@@ -2847,6 +2988,8 @@ def construct_vessel_from_request(shared, player, vessel_request_data) -> Vessel
         agency = shared.agencies.get(player.agency_id)
         if agency is not None:
             agency.vessels.append(vessel)
+            if hasattr(agency, "record_stat_counter"):
+                agency.record_stat_counter("vessels_launched", 1)
             print(f"✅ Vessel {vessel.object_id} added to Agency {agency.id64}")
         else:
             print(f"⚠️ No agency found with ID {player.agency_id}, vessel not tracked.")

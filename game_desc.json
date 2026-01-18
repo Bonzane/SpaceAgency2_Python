@@ -1,6 +1,12 @@
 
 {
 
+    "xp_level_curve" : {
+        "base" : 100,
+        "growth" : 1.15,
+        "cap" : 0
+    },
+
     "buildings" :    [
         {
             "id" : 1,
@@ -16,14 +22,15 @@
                 "6" : 600000,
                 "7" : 700000,
                 "8" : 800000,
-                "9" : 900000
+                "9" : 900000,
+                "10" : 50000000
             },
             "attributes" : {
                 "base_income" : 200,
                 "buildinglevel_unlocks" : {
                     "1" : {
                         "unlock_buildings" : [1, 2],
-                        "unlock_components" : [1, 2, 3, 4, 6, 5, 32, 33]
+                        "unlock_components" : [1, 2, 3, 4, 6]
                     }, 
                     "2" : {
                         "unlock_buildings" : [3, 4, 5],
@@ -53,8 +60,11 @@
                         "unlock_components" : [27, 30]
                     },
                     "9" : {
-                        "unlock_components" : [26],
+                        "unlock_components" : [26, 32],
                         "unlock_buildings" : [7]
+                    },
+                    "10" : {
+                        "unlock_components" : [33]
                     }
                 }
             }
@@ -273,7 +283,8 @@
                 "base_income" : 1000,
                 "buildinglevel_unlocks" : {
                     "1" : {
-                        "unlock_buildings" : [13]
+                        "unlock_buildings" : [13],
+                        "unlock_components" : [34, 35]
                     },
                     "2" : {
                         "unlock_buildings" : [14]
@@ -286,7 +297,10 @@
             "name" : "Climate Lab", 
             "cost" : 100000000, 
             "build_time" : 160,
-            "upgrade_costs" : {},
+            "upgrade_costs" : {
+                "2" : 50000000,
+                "3" : 75000000
+            },
             "description" : "A place to research technology to keep humans alive on other planets and improve life support systems on vessels.",
             "resource_cost" : {
                 "7" : 50
@@ -294,7 +308,13 @@
             "attributes" : {
                 "buildinglevel_unlocks" : {
                     "1" : {
-                        "unlock_components" : [19]
+                        "unlock_components" : [19, 36]
+                    },
+                    "2" : {
+                        "add_thermal_resistance" : 1
+                    },
+                    "3" : {
+                        "add_thermal_resistance" : 2
                     }
                 }
             }
@@ -409,13 +429,184 @@
         "Luna" : [10, 12, 4],
         "Mars" : [13,2,4, 14]      
     }, 
-
+    "quests" : [
+        {
+            "id" : "q_first_vessel",
+            "name" : "3...2...1...",
+            "description" : "Build a launchpad and your first vessel.",
+            "metric" : "vessels_built",
+            "target" : 1,
+            "rewards" : {
+                "xp" : 20
+            }
+        }, 
+        {
+            "id" : "q_blastoff",
+            "name" : "... Blast Off!",
+            "description" : "Get a rocket into space.",
+            "metric" : "blastoff",
+            "target" : 1,
+            "rewards" : {
+                "xp" : 50
+            }
+        },
+        {
+            "id" : "q_expand_base",
+            "name" : "Expand the Base",
+            "description" : "Build 3 buildings.",
+            "metric" : "buildings_built",
+            "target" : 3,
+            "rewards" : {
+                "rp" : 50,
+                "xp" : 50
+            }
+        },
+        {
+            "id" : "q_wireless_internet",
+            "name" : "Wireless Internet",
+            "description" : "Have 3 satellites in orbit at the same time.",
+            "metric" : "satellites_in_orbit",
+            "target" : 3,
+            "rewards" : {
+                "pp" : 75
+            }
+        },
+        {
+            "id" : "q_new_world",
+            "name" : "A New World",
+            "description" : "Discover one additional planet.",
+            "metric" : "planets_discovered",
+            "target" : 4,
+            "rewards" : {
+                "ep" : 100
+            }
+        },
+        {
+            "id" : "q_one_small_step",
+            "name" : "One Small Step",
+            "description" : "Land on the moon.",
+            "metric" : "moon_landings",
+            "target" : 1,
+            "rewards" : {
+                "pp" : 150
+            }
+        },
+        {
+            "id" : "q_more_power",
+            "name" : "More Power",
+            "description" : "Construct a vessel using strap-on boosters.",
+            "metric" : "strap_on_vessels",
+            "target" : 1,
+            "rewards" : {
+                "rp" : 100
+            }
+        },
+        {
+            "id" : "q_telescope_master",
+            "name" : "Telescope Master",
+            "description" : "Have a space telescope generate $750 in one second.",
+            "metric" : "agency_income_per_second",
+            "target" : 750,
+            "rewards" : {
+                "xp" : 150
+            }
+        },
+        {
+            "id" : "q_mag_neato",
+            "name" : "Mag Neat-O",
+            "description" : "Construct a probe and turn on the magnetometer.",
+            "metric" : "magnetometer_activated",
+            "target" : 1,
+            "rewards" : {
+                "rp" : 100
+            }
+        },
+        {
+            "id" : "q_probe_master",
+            "name" : "Probe Master",
+            "description" : "Inspect 3 planets with the same probe.",
+            "metric" : "max_probe_inspected_planets",
+            "target" : 3,
+            "rewards" : {
+                "pp" : 200,
+                "ep" : 200
+            }
+        },
+        {
+            "id" : "q_mark_rover",
+            "name" : "Mark Rover",
+            "description" : "Land a rover on the moon.",
+            "metric" : "rover_moon_landings",
+            "target" : 1,
+            "rewards" : {
+                "ep" : 50,
+                "rp" : 100
+            }
+        },
+        {
+            "id" : "q_mars_rover",
+            "name" : "Mark Rober",
+            "description" : "Land a rover on Mars.",
+            "metric" : "rover_mars_landings",
+            "target" : 1,
+            "rewards" : {
+                "rp" : 100,
+                "ep" : 200
+            }
+        },
+        {
+            "id" : "q_museum",
+            "name" : "It belongs in a museum!",
+            "description" : "Bring a moon rock back to Earth.",
+            "metric" : "moon_rock_earth",
+            "target" : 1,
+            "rewards" : {
+                "rp" : 300,
+                "ep" : 300,
+                "pp" : 300
+            }
+        },
+        {
+            "id" : "q_probe_expert",
+            "name" : "Probe Expert",
+            "description" : "Inspect 6 planets with the same probe.",
+            "metric" : "max_probe_inspected_planets",
+            "target" : 6,
+            "rewards" : {
+                "pp" : 1000,
+                "ep" : 1000
+            }
+        },
+        {
+            "id" : "q_no_man",
+            "name" : "Where No Man Has Gone Before",
+            "description" : "Leave the Solar System.",
+            "metric" : "left_solar_system",
+            "target" : 1,
+            "rewards" : {
+                "ep" : 1000
+            }
+        },
+        {
+            "id" : "q_something_old_new",
+            "name" : "Something old, something new",
+            "description" : "Discover a black hole with an interferometer.",
+            "metric" : "black_hole_interferometer",
+            "target" : 1,
+            "rewards" : {
+                "rp" : 2000,
+                "ep" : 2000,
+                "pp" : 2000
+            }
+        }
+    ],
     "agency_default_attributes" : {
         "global_cash_multiplier" : 1.0,
         "global_build_time_multiplier" : 1.0, 
         "satellite_bonus_income" : 0,
         "satellite_max_upgrade_tier" : 1,
-        "probe_max_upgrade_tier" : 1
+        "probe_max_upgrade_tier" : 1,
+        "thermal_resistance_bonus" : 0
     }, 
     "components" : [
         {
@@ -1061,6 +1252,7 @@
             "cost" : 20000,
             "mass" : 30,
             "attributes" : {
+                "aerodynamics" : 3
             },
             "snap_points" : [
                 {
@@ -1301,7 +1493,7 @@
             "name" : "Solar Orbiter", 
             "cost" : 200000,
             "resource_cost" : {
-                "10" : 0
+                "10" : 3
             },
             "mass" : 220,
             "attributes" : {
@@ -1485,10 +1677,8 @@
             "id" : 33,
             "category" : "engine",
             "name" : "Warp Drive", 
-            "cost" : 1000000,
-            "resource_cost" : {
-                "3" : 0
-            },
+            "cost" : 0,
+            "resource_cost" : {},
             "mass" : 50,
             "attributes" : {
                 "warp-drive" : 1,
@@ -1503,9 +1693,103 @@
                     "snaps_provided" : ["fuel-receive"]
                 }
             ]
+        },
+        {
+            "id" : 34,
+            "category" : "engine",
+            "name" : "Aux Booster L MKII",
+            "cost" : 50000,
+            "mass" : 18,
+            "attributes" : {
+                "cw-thrust" : 14,
+                "cw-fuel-consumption" : 2,
+                "cw-fire-output-point" : [-52, 52],
+                "cw-ignition-sound" : 4,
+                "cw-thrust-sound" : 1,
+                "cw-fire-appearance" : 4,
+                "cw-fire-angle-offset" : -45,
+                "cw-thrust-direction" : -45,
+                "cw-fire-heat" : 0.2
+            },
+            "snap_points" : [
+                {
+                    "x" : 0,
+                    "y" : 0,
+                    "snaps_accepted" : ["attachment-left-receive"],
+                    "snaps_provided" : ["attachment-left-give"]
+                }
+            ]
+        },
+        {
+            "id" : 35,
+            "category" : "engine",
+            "name" : "Aux Booster R MKII",
+            "cost" : 50000,
+            "mass" : 18,
+            "attributes" : {
+                "ccw-thrust" : 14,
+                "ccw-fuel-consumption" : 2,
+                "ccw-fire-output-point" : [52, 52],
+                "ccw-ignition-sound" : 4,
+                "ccw-thrust-sound" : 1,
+                "ccw-fire-appearance" : 4,
+                "ccw-fire-angle-offset" : 45,
+                "ccw-thrust-direction" : 45,
+                "ccw-fire-heat" : 0.2
+            },
+            "snap_points" : [
+                {
+                    "x" : 0,
+                    "y" : 0,
+                    "snaps_accepted" : ["attachment-right-receive"],
+                    "snaps_provided" : ["attachment-right-give"]
+                }
+            ]
+        },
+        {
+            "id" : 36,
+            "category" : "hull",
+            "name" : "Thermal Hull", 
+            "cost" : 180000,
+            "mass" : 650,
+            "attributes" : {
+                "liquid-fuel" : 1050,
+                "thermal-resistance" : 30
+            }, 
+            "snap_points" : [
+                {
+                    "x" : 0,
+                    "y" : -128,
+                    "snaps_accepted" : ["fuel-give", "fairing-give"], 
+                    "snaps_provided" : ["fairing-receive", "fuel-receive"]
+                }, 
+                {
+                    "x" : 0,
+                    "y" : 128,
+                    "snaps_accepted" : ["fuel-receive"], 
+                    "snaps_provided" : ["fuel-give"]
+                }, 
+                {
+                    "x" : -64,
+                    "y" : -64,
+                    "snaps_accepted" : ["attachment-left-give"], 
+                    "snaps_provided" : ["attachment-left-receive"]
+                }, 
+                {
+                    "x" : 64,
+                    "y" : -64,
+                    "snaps_accepted" : ["attachment-right-give"], 
+                    "snaps_provided" : ["attachment-right-receive"]
+                }, 
+                {
+                    "x" : 0,
+                    "y" : -64,
+                    "snaps_accepted" : ["attachment-center-give"], 
+                    "snaps_provided" : ["attachment-center-receive"]
+                }
+            ]
+
         }                                                                                             
     ]
         
 }
-
-

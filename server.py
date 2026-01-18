@@ -11,6 +11,11 @@ import aiohttp
 import struct
 import os, hashlib, copy, json
 import time
+import math
+import random
+from vessel_components import Components
+from regions import Region
+from gameobjects import ObjectType
 
 
 class HttpClient:
@@ -112,6 +117,11 @@ class ServerMissionControl:
         self.game_resources = None
         self.resource_transfer_rates: dict[int, int] = {}
         self.resource_names: list[str] = []
+        self.official_server = False
+        self.steam_app_id = 0
+        self.steam_publisher_key = ""
+        self.steam_stats_watchers: list[dict] = []
+        self.steam_achievement_watchers: list[dict] = []
         with open(self.game_desc_path, "r") as game_description_file:
             self.game_description = json.load(game_description_file)
             self.game_buildings_list = self.game_description.get("buildings")
@@ -121,6 +131,30 @@ class ServerMissionControl:
             self.buildings_by_id = {b["id"]: b for b in self.game_buildings_list}
             self.agency_default_attributes = self.game_description.get("agency_default_attributes", {})
             self.game_resources = self.game_description.get("resources", [])
+
+        try:
+            with open("steam_stats_watchers.json", "r", encoding="utf-8") as f:
+                stats = json.load(f)
+            watchers = stats.get("steam_stats_watchers", [])
+            if isinstance(watchers, list):
+                self.steam_stats_watchers = [a for a in watchers if isinstance(a, dict)]
+        except FileNotFoundError:
+            self.steam_stats_watchers = []
+        except Exception as e:
+            print(f"⚠️ Failed to load steam_stats_watchers.json: {e}")
+            self.steam_stats_watchers = []
+
+        try:
+            with open("achievement_watchers.json", "r", encoding="utf-8") as f:
+                achievements = json.load(f)
+            watchers = achievements.get("achievement_watchers", [])
+            if isinstance(watchers, list):
+                self.steam_achievement_watchers = [a for a in watchers if isinstance(a, dict)]
+        except FileNotFoundError:
+            self.steam_achievement_watchers = []
+        except Exception as e:
+            print(f"⚠️ Failed to load achievement_watchers.json: {e}")
+            self.steam_achievement_watchers = []
 
         for idx, item in enumerate(self.game_resources):
             name, rate = None, 0
@@ -251,6 +285,171 @@ class ServerMissionControl:
             print(f"⚠️ post-reload agency attr update failed: {e}")
 
 
+    async def set_steam_stats(self, steam_id: int, stats: Dict[str, float | int]) -> bool:
+        """
+        Use Steam Web API to set stats. Only works on official servers.
+        """
+        if not self.official_server:
+            print(f"⚠️ Steam stats blocked: official_server disabled (steam_id={steam_id})")
+            return False
+        if not self.steam_app_id:
+            print(f"⚠️ Steam stats blocked: STEAM_APP_ID missing (steam_id={steam_id})")
+            return False
+        if not self.steam_publisher_key:
+            print(f"⚠️ Steam stats blocked: STEAM_PUBLISHER_KEY missing (steam_id={steam_id})")
+            return False
+        if not stats:
+            print(f"⚠️ Steam stats blocked: no stats provided (steam_id={steam_id})")
+            return False
+
+        def _post():
+            url = "https://partner.steam-api.com/ISteamUserStats/SetUserStatsForGame/v1/"
+            data = {
+                "key": self.steam_publisher_key,
+                "steamid": str(int(steam_id)),
+                "appid": str(int(self.steam_app_id)),
+            }
+            i = 0
+            for name, value in stats.items():
+                data[f"name[{i}]"] = str(name)
+                data[f"value[{i}]"] = str(value)
+                i += 1
+            data["count"] = str(i)
+            return requests.post(url, data=data, timeout=5)
+
+        try:
+            resp = await asyncio.to_thread(_post)
+        except Exception as e:
+            print(f"⚠️ Steam stats request failed: steam_id={steam_id} stats={list(stats.keys())} err={e}")
+            return False
+
+        body = resp.text
+        # Debug-only:
+        # print(f"📨 Steam stats response: steam_id={steam_id} status={resp.status_code} stats={list(stats.keys())} body={body}")
+
+        if resp.status_code != 200:
+            return False
+
+        try:
+            payload = resp.json()
+        except Exception as e:
+            print(f"⚠️ Steam stats JSON parse failed: steam_id={steam_id} stats={list(stats.keys())} err={e}")
+            return False
+
+        result = None
+        if isinstance(payload, dict):
+            result = payload.get("response", {}).get("result")
+        if result != 1:
+            print(f"⚠️ Steam stats failed: steam_id={steam_id} stats={list(stats.keys())} payload={payload}")
+            return False
+        # Fetch back the current stats to verify what Steam has recorded.
+        def _get():
+            url = "https://partner.steam-api.com/ISteamUserStats/GetUserStatsForGame/v2/"
+            params = {
+                "key": self.steam_publisher_key,
+                "steamid": str(int(steam_id)),
+                "appid": str(int(self.steam_app_id)),
+            }
+            return requests.get(url, params=params, timeout=5)
+
+        try:
+            get_resp = await asyncio.to_thread(_get)
+            print(
+                "📨 Steam stats readback: "
+                f"steam_id={steam_id} status={get_resp.status_code} body={get_resp.text}"
+            )
+        except Exception as e:
+            print(f"⚠️ Steam stats readback failed: steam_id={steam_id} err={e}")
+        return True
+
+    async def set_steam_achievement(
+        self,
+        steam_id: int,
+        achievement_name: str,
+        stats: Dict[str, float | int] | None = None,
+    ) -> bool:
+        """
+        Use Steam Web API to unlock an achievement for a user. Only works on official servers.
+        """
+        if not self.official_server:
+            print(f"⚠️ Steam achievement blocked: official_server disabled (steam_id={steam_id})")
+            return False
+        if not self.steam_app_id:
+            print(f"⚠️ Steam achievement blocked: STEAM_APP_ID missing (steam_id={steam_id})")
+            return False
+        if not self.steam_publisher_key:
+            print(f"⚠️ Steam achievement blocked: STEAM_PUBLISHER_KEY missing (steam_id={steam_id})")
+            return False
+        if not achievement_name:
+            print(f"⚠️ Steam achievement blocked: missing achievement name (steam_id={steam_id})")
+            return False
+        if not stats:
+            print(f"⚠️ Steam achievement blocked: missing stats payload (steam_id={steam_id})")
+            return False
+
+        def _post_userstats():
+            url = "https://partner.steam-api.com/ISteamUserStats/SetUserStatsForGame/v1/"
+            data = {
+                "key": self.steam_publisher_key,
+                "steamid": str(int(steam_id)),
+                "appid": str(int(self.steam_app_id)),
+                "achievement_count": "1",
+                "achievements[0][name]": str(achievement_name),
+                "achievements[0][achieved]": "1",
+                "achievements[0][unlocktime]": str(int(time.time())),
+            }
+            i = 0
+            for name, value in (stats or {}).items():
+                data[f"name[{i}]"] = str(name)
+                data[f"value[{i}]"] = str(value)
+                i += 1
+            data["count"] = str(i)
+            return requests.post(url, data=data, timeout=5)
+        try:
+            resp = await asyncio.to_thread(_post_userstats)
+            print(
+                "📨 Steam achievement response (userstats): "
+                f"steam_id={steam_id} status={resp.status_code} achievement={achievement_name} body={resp.text}"
+            )
+        except Exception as e:
+            print(f"⚠️ Steam achievement request failed: steam_id={steam_id} achievement={achievement_name} err={e}")
+            return False
+
+        if resp.status_code != 200:
+            return False
+
+        try:
+            payload = resp.json()
+        except Exception as e:
+            print(f"⚠️ Steam achievement JSON parse failed: steam_id={steam_id} achievement={achievement_name} err={e}")
+            return False
+
+        result = None
+        if isinstance(payload, dict):
+            result = payload.get("response", {}).get("result")
+        if result != 1:
+            print(f"⚠️ Steam achievement failed: steam_id={steam_id} achievement={achievement_name} payload={payload}")
+            return False
+        # Fetch back the current stats/achievements to verify what Steam has recorded.
+        def _get():
+            url = "https://partner.steam-api.com/ISteamUserStats/GetUserStatsForGame/v2/"
+            params = {
+                "key": self.steam_publisher_key,
+                "steamid": str(int(steam_id)),
+                "appid": str(int(self.steam_app_id)),
+            }
+            return requests.get(url, params=params, timeout=5)
+
+        try:
+            get_resp = await asyncio.to_thread(_get)
+            print(
+                "📨 Steam achievement readback: "
+                f"steam_id={steam_id} status={get_resp.status_code} body={get_resp.text}"
+            )
+        except Exception as e:
+            print(f"⚠️ Steam achievement readback failed: steam_id={steam_id} err={e}")
+        return True
+
 
     def get_next_agency_id(self):
         while self.next_available_agency_id in self.agencies:
@@ -307,6 +506,7 @@ class ControlServer:
         self.active = False #The server must be "activated"
         self.sessions: Set[Session] = set()
         self.next_available_temp_id = 0
+        self._network_orb_accum = 0.0
 
     #Marks the server as active and starts accepting connections
     def activate(self):
@@ -346,6 +546,82 @@ class ControlServer:
                     _building.update()
                 #Update agency attributes
                 _agency.update_attributes()
+                # Advance agency age in in-game days
+                sim_days = float(getattr(self.shared, "gamespeed", 0.0)) / 86400.0
+                _agency.age_days = float(getattr(_agency, "age_days", 0.0)) + max(0.0, sim_days)
+                # Update rolling record stats
+                if hasattr(_agency, "update_stat_records"):
+                    _agency.update_stat_records()
+                #Update quests and award completion rewards
+                completed = []
+                if hasattr(_agency, "update_quest_progress"):
+                    completed = _agency.update_quest_progress() or []
+                if completed:
+                    for q in completed:
+                        qid = str(q.get("id", "")).strip()
+                        rewards = q.get("rewards", {}) if isinstance(q, dict) else {}
+                        rp = int(rewards.get("rp", 0) or 0)
+                        ep = int(rewards.get("ep", 0) or 0)
+                        pp = int(rewards.get("pp", 0) or 0)
+                        xp = int(rewards.get("xp", 0) or 0)
+                        if rp:
+                            _agency.research_points += rp
+                        if ep:
+                            _agency.exploration_points += ep
+                        if pp:
+                            _agency.publicity_points += pp
+                        if xp:
+                            _agency.experience_points += xp
+
+                        if qid and hasattr(_agency, "mark_quest_claimed"):
+                            _agency.mark_quest_claimed(qid)
+
+                        qname = str(q.get("name", qid or "Quest")) if isinstance(q, dict) else "Quest"
+                        chat = self._build_chat_packet(ChatMessage.SERVERGENERAL, 0, f"Quest completed: {qname}")
+                        try:
+                            await self.broadcast_to_agency(_agency.id64, chat)
+                        except Exception as e:
+                            print(f"⚠️ Failed to send quest chat: {e}")
+
+                # Update Steam stats (non-quest watchers)
+                stat_updates = []
+                if hasattr(_agency, "update_steam_stats"):
+                    stat_updates = _agency.update_steam_stats() or []
+                if stat_updates and getattr(self.shared, "official_server", False):
+                    stats_by_name = {}
+                    for stat_name, value, meta in stat_updates:
+                        official_only = bool(meta.get("official_only", False)) if isinstance(meta, dict) else False
+                        if official_only and not getattr(self.shared, "official_server", False):
+                            continue
+                        stats_by_name[str(stat_name)] = value
+                    if stats_by_name:
+                        ok = await self._set_steam_stats_for_agency(_agency, stats_by_name)
+                        if not ok:
+                            print("⚠️ Steam stats update failed for agency")
+
+                # Update Steam achievements (official server only)
+                ach_updates = []
+                if hasattr(_agency, "update_steam_achievements"):
+                    ach_updates = _agency.update_steam_achievements() or []
+                if ach_updates and getattr(self.shared, "official_server", False):
+                    filtered = []
+                    for a in ach_updates:
+                        official_only = bool(a.get("official_only", False)) if isinstance(a, dict) else False
+                        if official_only and not getattr(self.shared, "official_server", False):
+                            continue
+                        filtered.append(a)
+                    if filtered:
+                        ok = await self._set_steam_achievements_for_agency(_agency, filtered)
+                        if not ok:
+                            print("⚠️ Steam achievement update failed for agency")
+            # Network satellite orb drip (once per minute)
+            self._network_orb_accum += 1.0
+            if self._network_orb_accum >= 60.0:
+                try:
+                    await self._award_network_sat_orbs()
+                except Exception as e:
+                    print(f"⚠️ network orb award failed: {e}")
+                self._network_orb_accum = 0.0
 
 
             #Send the agency gamestates
@@ -375,6 +651,103 @@ class ControlServer:
             return 0
         await asyncio.gather(*(s.send(data) for s in targets))
         return len(targets)
+
+    async def _award_network_sat_orbs(self):
+        """
+        Once per minute, give RP or PP orbs for deployed comm satellites.
+        """
+        udp = getattr(self.shared, "udp_server", None)
+        if not udp:
+            return
+        for ag in self.shared.agencies.values():
+            for v in ag.get_all_vessels():
+                try:
+                    if int(getattr(v, "payload", 0)) != int(Components.COMMUNICATIONS_SATELLITE):
+                        continue
+                    if int(getattr(v, "stage", 1)) != 0:
+                        continue
+                    if bool(getattr(v, "landed", False)):
+                        continue
+                    point_type = random.choice([0, 2])  # 0=rp, 2=pp
+                    udp.send_xp_orb_to_agency(
+                        agency_id=int(getattr(ag, "id64", 0)),
+                        point_type=point_type,
+                        source_kind=0,
+                        vessel_id=int(getattr(v, "object_id", 0)),
+                    )
+                except Exception as e:
+                    print(f"⚠️ network orb skip: {e}")
+
+    async def _set_steam_stats_for_agency(self, agency: Agency, stats: Dict[str, float | int]) -> bool:
+        """
+        Attempt to set Steam stats for all members. Returns True if any succeeded.
+        """
+        if not stats:
+            return False
+        ok_any = False
+        for steam_id in getattr(agency, "members", []):
+            try:
+                ok = await self.shared.set_steam_stats(int(steam_id), stats)
+            except Exception as e:
+                print(f"⚠️ Steam stats failed for {steam_id}: {e}")
+                ok = False
+            ok_any = ok_any or ok
+        return ok_any
+
+    async def _set_steam_achievements_for_agency(self, agency: Agency, achievements: list[dict]) -> bool:
+        """
+        Attempt to unlock achievements for all members. Returns True if any succeeded.
+        """
+        if not achievements:
+            return False
+        metric_to_stat = {}
+        stat_to_metric = {}
+        for s in getattr(self.shared, "steam_stats_watchers", []):
+            if not isinstance(s, dict):
+                continue
+            metric = str(s.get("metric", "")).strip()
+            stat_name = str(s.get("stat_name", "")).strip()
+            if metric and stat_name and metric not in metric_to_stat:
+                metric_to_stat[metric] = stat_name
+            if metric and stat_name and stat_name not in stat_to_metric:
+                stat_to_metric[stat_name] = metric
+        ok_any = False
+        for a in achievements:
+            ach_id = str(a.get("id", "")).strip()
+            ach_name = str(a.get("steam_id", "") or a.get("name", "") or ach_id).strip()
+            if not ach_name:
+                continue
+            metric = str(a.get("metric", "")).strip()
+            stat_name = str(a.get("stat_name", "")).strip() or str(a.get("progress_stat", "")).strip()
+            if not metric and stat_name:
+                metric = stat_to_metric.get(stat_name, stat_name)
+            if metric and metric in stat_to_metric:
+                metric = stat_to_metric.get(metric, metric)
+            stat_name = stat_name or metric_to_stat.get(metric, "")
+            if not stat_name:
+                print(f"⚠️ Steam achievement blocked: no stat mapping for {ach_name}")
+                continue
+            try:
+                stat_value = int(getattr(agency, "_steam_stat_metric_value")(metric))
+            except Exception:
+                stat_value = 0
+            stats_payload = {stat_name: stat_value}
+            ok_for_achievement = False
+            for steam_id in getattr(agency, "members", []):
+                try:
+                    ok = await self.shared.set_steam_achievement(
+                        int(steam_id),
+                        ach_name,
+                        stats=stats_payload,
+                    )
+                except Exception as e:
+                    print(f"⚠️ Steam achievement failed for {steam_id}: {e}")
+                    ok = False
+                ok_for_achievement = ok_for_achievement or ok
+                ok_any = ok_any or ok
+            if ok_for_achievement and hasattr(agency, "mark_achievement_unlocked"):
+                agency.mark_achievement_unlocked(ach_id)
+        return ok_any
 
     def _build_info_about_agencies_blob(self) -> bytes:
         payload = {
@@ -628,6 +1001,59 @@ class StreamingServer:
         self.active = False #The server must be "activated"
         self.control = controlserver
         self.objstream_seq = 0
+        self._region_name_cache = {}
+
+    def _region_display_name(self, region_id: int) -> str:
+        # Friendly display names; fall back to enum name
+        cache_key = int(region_id) & 0xFF
+        if cache_key in self._region_name_cache:
+            return self._region_name_cache[cache_key]
+        friendly = {
+            Region.UNDEFINED: "Space",
+            Region.SPACE: "Space",
+            Region.EARTH_CLOSE: "Near Earth",
+            Region.EARTH_NEAR: "Near Earth",
+            Region.EARTH_DISTANT: "Earth",
+            Region.MOON_NEAR: "Near Moon",
+            Region.MARS_CLOSE: "Near Mars",
+            Region.MARS_NEAR: "Near Mars",
+            Region.MARS_DISTANT: "Mars",
+            Region.VENUS_CLOSE: "Near Venus",
+            Region.VENUS_NEAR: "Near Venus",
+            Region.VENUS_DISTANT: "Venus",
+            Region.MERCURY_CLOSE: "Near Mercury",
+            Region.MERCURY_NEAR: "Near Mercury",
+            Region.MERCURY_DISTANT: "Mercury",
+            Region.ASTEROID_BELT: "Asteroid Belt",
+            Region.JUPITER_CLOSE: "Near Jupiter",
+            Region.JUPITER_NEAR: "Near Jupiter",
+            Region.JUPITER_DISTANT: "Jupiter",
+            Region.SATURN_CLOSE: "Near Saturn",
+            Region.SATURN_NEAR: "Near Saturn",
+            Region.SATURN_DISTANT: "Saturn",
+            Region.URANUS_CLOSE: "Near Uranus",
+            Region.URANUS_NEAR: "Near Uranus",
+            Region.URANUS_DISTANT: "Uranus",
+            Region.NEPTUNE_CLOSE: "Near Neptune",
+            Region.NEPTUNE_NEAR: "Near Neptune",
+            Region.NEPTUNE_DISTANT: "Neptune",
+            Region.TRANS_NEPTUNIAN: "Trans-Neptunian Space",
+            Region.KUIPER_BELT: "Kuiper Belt",
+            Region.TERMINATION_SHOCK: "Termination Shock",
+            Region.HELIOSHEATH: "Heliosheath",
+            Region.HELIOPAUSE: "Heliopause",
+            Region.INTRASTELLAR_WINDLESS: "Intrastellar Windless Space",
+            Region.INNER_OORT_CLOUD: "Inner Oort Cloud",
+            Region.OUTER_OORT_CLOUD: "Outer Oort Cloud",
+        }
+        name = friendly.get(Region(cache_key), None) if cache_key in Region._value2member_map_ else None
+        if name is None:
+            try:
+                name = Region(cache_key).name
+            except Exception:
+                name = "UNKNOWN_REGION"
+        self._region_name_cache[cache_key] = name
+        return name
 
     def activate(self):
         print(f"🟢 Streaming Server Activated on port {self.port}")
@@ -748,6 +1174,149 @@ class StreamingServer:
             addr = (session.remote_ip, session.udp_port)
             self.transport.sendto(response, addr)
 
+        elif data[0] == DataGramPacketType.CAMERA_CONTEXT:
+            # Client sends: [opcode][int64 x][int64 y]
+            if len(data) < 1 + 16:
+                print("⚠️ CAMERA_CONTEXT packet too short")
+                return
+            key = (ip, port)
+            session = self.shared.udp_endpoint_to_session.get(key)
+            if not session:
+                print(f"❌ Unknown session for {key}")
+                return
+            player = getattr(session, "player", None)
+            if not player:
+                print(f"❌ CAMERA_CONTEXT: no player bound to session {getattr(session, 'temp_id', 0)}")
+                return
+            try:
+                cam_x, cam_y = struct.unpack('<qq', data[1:17])
+            except Exception:
+                print("⚠️ CAMERA_CONTEXT failed to unpack coords")
+                return
+
+            region_id = int(Region.SPACE)
+            # Find nearest planet in the player's current chunk
+            chunk_key = (getattr(player, "galaxy", 1), getattr(player, "system", 1))
+            chunk = self.shared.chunk_manager.loaded_chunks.get(chunk_key)
+            if chunk:
+                try:
+                    nearest = None
+                    nearest_dist = float("inf")
+                    sun_pos = None
+                    neptune_pos = None
+                    region_candidates = []
+                    for obj in getattr(chunk, "objects", []):
+                        if not hasattr(obj, "check_in_region"):
+                            continue
+                        if getattr(obj, "object_type", None) == getattr(ObjectType, "SUN", None):
+                            sun_pos = getattr(obj, "position", (0.0, 0.0))
+                        if getattr(obj, "object_type", None) == getattr(ObjectType, "NEPTUNE", None):
+                            neptune_pos = getattr(obj, "position", (0.0, 0.0))
+                        ox, oy = getattr(obj, "position", (0.0, 0.0))
+                        d = math.hypot(cam_x - ox, cam_y - oy)
+                        try:
+                            reg = obj.check_in_region(d)
+                            if reg is not None:
+                                region_candidates.append((d, int(reg)))
+                        except Exception:
+                            pass
+                        if d < nearest_dist:
+                            nearest_dist = d
+                            nearest = obj
+                    if region_candidates:
+                        region_candidates.sort(key=lambda x: x[0])  # smallest distance wins
+                        region_id = region_candidates[0][1]
+                    elif nearest:
+                        r = nearest.check_in_region(nearest_dist)
+                        if r is None:
+                            region_id = int(Region.SPACE)
+                        else:
+                            region_id = int(r)
+                    # Solar-system special regions based on distance from the sun
+                    if sun_pos and chunk_key == (1, 1):
+                        sx, sy = sun_pos
+                        cam_rad = math.hypot(cam_x - sx, cam_y - sy)
+                        # Define band edges (km)
+                        KUIPER_START = 4.5e9
+                        KUIPER_END = 7.5e9
+                        # Heliocentric bands (km)
+                        TERM_START = 1.2566221139e10
+                        TERM_END = 1.4062200846e10
+                        HELIO_START = 1.4062200846e10
+                        HELIO_END = 1.8193110279e10
+                        PAUSE_CENTER = 1.8193110279e10
+                        PAUSE_HALF_WIDTH = 0.01 * PAUSE_CENTER  # 1% band
+                        WINDLESS_START = 1.8193110279e10
+                        WINDLESS_END = 3.0e11  # up to Inner Oort start
+                        INNER_OORT_START = 3.0e11
+                        INNER_OORT_END = 1.5e13
+                        OUTER_OORT_START = 1.5e13
+                        OUTER_OORT_END = 2.0e13
+
+                        # Priority: farthest first so outer bands override nearer ones
+                        if OUTER_OORT_START < cam_rad <= OUTER_OORT_END:
+                            region_id = int(Region.OUTER_OORT_CLOUD)
+                        elif INNER_OORT_START < cam_rad <= INNER_OORT_END:
+                            region_id = int(Region.INNER_OORT_CLOUD)
+                        elif WINDLESS_START < cam_rad <= WINDLESS_END:
+                            region_id = int(Region.INTRASTELLAR_WINDLESS)
+                        elif (PAUSE_CENTER - PAUSE_HALF_WIDTH) <= cam_rad <= (PAUSE_CENTER + PAUSE_HALF_WIDTH):
+                            region_id = int(Region.HELIOPAUSE)
+                        elif HELIO_START <= cam_rad <= HELIO_END:
+                            region_id = int(Region.HELIOSHEATH)
+                        elif TERM_START <= cam_rad <= TERM_END:
+                            region_id = int(Region.TERMINATION_SHOCK)
+                        elif KUIPER_START <= cam_rad <= KUIPER_END:
+                            region_id = int(Region.KUIPER_BELT)
+                        elif neptune_pos:
+                            nx, ny = neptune_pos
+                            neptune_dist = math.hypot(nx - sx, ny - sy)
+                            # Trans-Neptunian only in two slices: just beyond Neptune up to Kuiper start,
+                            # or between Kuiper end and Termination Shock start.
+                            if (neptune_dist < cam_rad < KUIPER_START) or (KUIPER_END < cam_rad < HELIO_START):
+                                region_id = int(Region.TRANS_NEPTUNIAN)
+                        # Safety: if we somehow still marked Trans-Neptunian but are past heliosphere bands, override.
+                        if region_id == int(Region.TRANS_NEPTUNIAN) and cam_rad >= HELIO_START:
+                            if HELIO_START <= cam_rad <= HELIO_END:
+                                region_id = int(Region.HELIOSHEATH)
+                            elif (PAUSE_CENTER - PAUSE_HALF_WIDTH) <= cam_rad <= (PAUSE_CENTER + PAUSE_HALF_WIDTH):
+                                region_id = int(Region.HELIOPAUSE)
+                            elif WINDLESS_START < cam_rad <= WINDLESS_END:
+                                region_id = int(Region.INTRASTELLAR_WINDLESS)
+                            elif INNER_OORT_START < cam_rad <= INNER_OORT_END:
+                                region_id = int(Region.INNER_OORT_CLOUD)
+                            elif OUTER_OORT_START < cam_rad <= OUTER_OORT_END:
+                                region_id = int(Region.OUTER_OORT_CLOUD)
+                except Exception as e:
+                    print(f"⚠️ CAMERA_CONTEXT region calc failed: {e}")
+
+            # In-game day: use agency age_days if available, else 0
+            game_day = 0.0
+            try:
+                agency = self.control.shared.agencies.get(int(getattr(player, "agency_id", 0)))
+                if agency is not None:
+                    game_day = float(getattr(agency, "age_days", 0.0))
+            except Exception:
+                pass
+
+            resp = bytearray()
+            resp.append(DataGramPacketType.CAMERA_CONTEXT_REPLY)
+            resp += struct.pack('<Bf', region_id & 0xFF, float(game_day))
+            self.transport.sendto(resp, addr)
+
+        elif data[0] == DataGramPacketType.REGION_NAME_REQUEST:
+            # Client payload: u8 region_id
+            if len(data) < 2:
+                print("⚠️ REGION_NAME_REQUEST packet too short")
+                return
+            region_id = int(data[1])
+            name = self._region_display_name(region_id)
+            resp = bytearray()
+            resp.append(DataGramPacketType.REGION_NAME_REQUEST)
+            resp.append(region_id & 0xFF)
+            resp += name.encode('utf-8') + b'\x00'
+            self.transport.sendto(resp, addr)
+
 
         elif data[0] == DataGramPacketType.RESOLVE_VESSEL:
             if len(data) < 9:
@@ -769,6 +1338,9 @@ class StreamingServer:
             # Ensure cargo dict exists on the vessel
             if vessel:
                 self._ensure_vessel_cargo(vessel)
+            else:
+                print(f"⚠️ RESOLVE_VESSEL: vessel {vessel_id} not found in chunk {chunk_key}")
+                return
 
             asyncio.create_task(session.send(self.build_resolve_vessel_packet(vessel)))
 
@@ -987,12 +1559,71 @@ class StreamingServer:
                     astro.suit_id = int(s)
 
                 name = getattr(astro, "name", f"Astronaut {astro_id}")
-                self._udp_send_to_session(session, self.build_notification_packet(2, f"{name}'s suit set to {int(astro.suit_id)}."))
+                msg = f"{{{int(player.steamID)}}} changed {name}'s suit to {int(astro.suit_id)}"
+                try:
+                    chat_pkt = self._build_chat_packet(ChatMessage.SERVERGENERAL, 0, msg)
+                    loop = asyncio.get_running_loop()
+                    loop.create_task(self.broadcast_to_agency(agency.id64, chat_pkt))
+                except Exception as e:
+                    print(f"⚠️ Failed to send suit change chat: {e}")
                 print(f"🧑‍🚀 Suit changed: astro={astro_id} -> suit={int(astro.suit_id)}")
                 # UI will pick this up on the next agency gamestate tick
             else:
                 self._udp_send_to_session(session, self.build_notification_packet(1, f"Suit change failed: {reason}"))
                 print(f"🧑‍🚀 Suit change failed({reason}): astro={astro_id} -> suit={suit_id}")
+
+        elif data[0] == DataGramPacketType.CHANGE_ASTRONAUT_NAME:
+            # [1] opcode + [4] astronaut_id (u32) + cstring name
+            if len(data) < 1 + 4 + 1:
+                print("⚠️ CHANGE_ASTRONAUT_NAME: packet too short")
+                return
+
+            astro_id = int.from_bytes(data[1:5], 'little', signed=False)
+            end = data.find(b'\x00', 5)
+            if end == -1:
+                print("⚠️ CHANGE_ASTRONAUT_NAME: missing null terminator")
+                return
+            raw_name = data[5:end].decode('utf-8', errors='replace')
+            new_name = raw_name.strip()
+
+            key = (ip, port)
+            session = self.shared.udp_endpoint_to_session.get(key)
+            if not session or not session.alive:
+                print(f"❌ Unknown or dead session for {key}")
+                return
+            player = getattr(session, "player", None)
+            if not player:
+                print(f"❌ No player bound to session {getattr(session, 'temp_id', 0)}")
+                return
+
+            agency = self.shared.agencies.get(getattr(player, "agency_id", 0))
+            if not agency:
+                self._udp_send_to_session(session, self.build_notification_packet(1, "Name change failed: agency not found"))
+                return
+
+            astro = agency.astronauts.get(int(astro_id))
+            if not astro or int(getattr(astro, "agency_id", -1)) != int(agency.id64):
+                self._udp_send_to_session(session, self.build_notification_packet(1, "Name change failed: astronaut not found or not yours"))
+                return
+
+            if not new_name:
+                self._udp_send_to_session(session, self.build_notification_packet(1, "Name change failed: name is empty"))
+                return
+
+            max_len = 32
+            if len(new_name) > max_len:
+                new_name = new_name[:max_len].rstrip()
+
+            astro.name = new_name
+            msg = f"{{{int(player.steamID)}}} renamed astronaut {astro_id} to {astro.name}"
+            try:
+                chat_pkt = self._build_chat_packet(ChatMessage.SERVERGENERAL, 0, msg)
+                loop = asyncio.get_running_loop()
+                loop.create_task(self.broadcast_to_agency(agency.id64, chat_pkt))
+            except Exception as e:
+                print(f"⚠️ Failed to send rename chat: {e}")
+            print(f"🧑‍🚀 Name changed: astro={astro_id} -> {astro.name}")
+            # UI will pick this up on the next agency gamestate tick
 
         elif data[0] == DataGramPacketType.UNBOARD_ASTRONAUT:
             # [1] opcode + [4] astronaut_id (u32) + [8] vessel_id (u64)
@@ -1080,7 +1711,13 @@ class StreamingServer:
                     astro.suit_id = int(s)
 
                 name = getattr(astro, "name", f"Astronaut {astro_id}")
-                self._udp_send_to_session(session, self.build_notification_packet(2, f"{name}'s suit set to {int(astro.suit_id)}."))
+                msg = f"{{{int(player.steamID)}}} changed {name}'s suit to {int(astro.suit_id)}"
+                try:
+                    chat_pkt = self.control_server._build_chat_packet(ChatMessage.SERVERGENERAL, 0, msg)
+                    loop = asyncio.get_running_loop()
+                    loop.create_task(self.control_server.broadcast_to_agency(agency.id64, chat_pkt))
+                except Exception as e:
+                    print(f"⚠️ Failed to send suit change chat: {e}")
                 print(f"🧑‍🚀 Suit changed: astro={astro_id} -> suit={int(astro.suit_id)}")
                 # UI will pick this up on the next agency gamestate tick
             else:
@@ -1126,7 +1763,6 @@ class StreamingServer:
                 print(f"GET_JETTISON: oid={asked_oid} not found in chunk {chunk_key} (may have expired).")
             else:
                 # validate it’s actually a jettisoned component
-                from gameobjects import ObjectType
                 if getattr(obj, "object_type", None) == ObjectType.JETTISONED_COMPONENT:
                     comp_id = int(getattr(obj, "component_id", 0))
                     if comp_id == 0:
@@ -1276,6 +1912,16 @@ class StreamingServer:
                 inv[int(rid)] = int(inv.get(int(rid), 0)) + take
                 total_unloaded += take
 
+            # Quest: moon rock returned to Earth (resource id 15 to planet 2)
+            try:
+                if int(planet_id) == 2:
+                    delivered = {int(rid): take for rid, _ in pairs if (take := min(int(cargo.get(int(rid), 0)), int(inv.get(int(rid), 0))))}
+                    if int(delivered.get(15, 0)) > 0:
+                        if agency and hasattr(agency, "record_quest_metric"):
+                            agency.record_quest_metric("moon_rock_earth", 1)
+            except Exception as e:
+                print(f"⚠️ moon rock quest check failed: {e}")
+
             self._udp_send_to_session(session, self.build_cargo_state_packet(vessel, int(planet_id)))
             if total_unloaded == 0:
                 self._udp_send_to_session(session, self.build_notification_packet(1, "Nothing unloaded (no cargo onboard)."))
@@ -1286,6 +1932,13 @@ class StreamingServer:
                 print("⚠️ CARGO_STATE: packet too short"); return
 
             vessel_id = int.from_bytes(data[1:9],  "little", signed=False)
+            key = (ip, port)
+            session = self.shared.udp_endpoint_to_session.get(key)
+            if not session or not session.alive:
+                print(f"❌ Unknown or dead session for {key}"); return
+            player = getattr(session, "player", None)
+            if not player:
+                print(f"❌ No player bound to session {getattr(session, 'temp_id', 0)}"); return
             chunk_key = (player.galaxy, player.system)
             chunk = self.shared.chunk_manager.loaded_chunks.get(chunk_key)
             if not chunk:
@@ -1434,6 +2087,9 @@ class StreamingServer:
             await asyncio.sleep(1 / 60)  
 
     def build_resolve_vessel_packet(self, vessel):
+        if vessel is None:
+            print("⚠️ build_resolve_vessel_packet called with None vessel")
+            return b""
         print("Sending vessel resolve packet")
         packet = bytearray()
         packet += struct.pack('<H', PacketType.RESOLVE_VESSEL_REPLY)
@@ -1450,25 +2106,6 @@ class StreamingServer:
         for comp in components:
             packet += struct.pack('<HhhHHH', comp.id, comp.x, comp.y, comp.stage, comp.paint1, comp.paint2)
         return packet   
-
-    def build_telescope_sight_packet(self, vessel):
-        """
-        Layout:
-        u8   opcode = TELESCOPE_SIGHT
-        u64  vessel_id
-        u16  count
-        [count x u64 object_id]
-        """
-        pkt = bytearray()
-        pkt.append(DataGramPacketType.TELESCOPE_SIGHT)
-        pkt += struct.pack('<Q', vessel.object_id)
-
-        ids = [int(obj.object_id) for obj in getattr(vessel, "telescope_targets_in_sight", []) if obj is not None]
-        pkt += struct.pack('<H', len(ids))
-        for oid in ids:
-            pkt += struct.pack('<Q', oid)
-        return pkt
-
 
     # StreamingServer
     def send_udp_to_agency(self, agency_id: int, packet: bytes) -> int:
@@ -1524,6 +2161,35 @@ class StreamingServer:
         pkt += message.encode("utf-8") + b"\x00"
         return pkt
 
+    def build_xp_orb_packet(
+        self,
+        point_type: int,
+        source_kind: int,
+        vessel_id: int = 0,
+        planet_id: int = 0,
+        building_type: int = 0,
+    ) -> bytes:
+        """
+        Layout:
+        u8  opcode = XP_ORB
+        u8  point_type (0=rp, 1=ep, 2=pp, 3=xp)
+        u8  source_kind (0=vessel, 1=building)
+        if vessel:
+          u64 vessel_id
+        else:
+          u64 planet_id
+          u16 building_type
+        """
+        pkt = bytearray()
+        pkt.append(DataGramPacketType.XP_ORB)
+        pkt.append(int(point_type) & 0xFF)
+        pkt.append(int(source_kind) & 0xFF)
+        if int(source_kind) == 0:
+            pkt += struct.pack("<Q", int(vessel_id))
+        else:
+            pkt += struct.pack("<QH", int(planet_id), int(building_type))
+        return pkt
+
     def _udp_send_to_session(self, session, packet: bytes) -> bool:
         """
         Low-level helper. Returns True if we had an address to send to.
@@ -1568,6 +2234,50 @@ class StreamingServer:
             if s.alive and getattr(getattr(s, "player", None), "agency_id", None) == agency_id
         ]
         return await self.notify_sessions(targets, notif_kind, message)
+
+    def send_xp_orb_to_agency(
+        self,
+        agency_id: int,
+        point_type: int,
+        source_kind: int,
+        vessel_id: int = 0,
+        planet_id: int = 0,
+        building_type: int = 0,
+    ) -> int:
+        """
+        One-shot XP orb event to all online players in an agency.
+        """
+        # Apply the points to the agency immediately
+        agency = self.shared.agencies.get(agency_id) if hasattr(self.shared, "agencies") else None
+        if agency:
+            try:
+                if point_type == 0:
+                    agency.research_points = int(getattr(agency, "research_points", 0)) + 1
+                elif point_type == 1:
+                    agency.exploration_points = int(getattr(agency, "exploration_points", 0)) + 1
+                elif point_type == 2:
+                    agency.publicity_points = int(getattr(agency, "publicity_points", 0)) + 1
+                elif point_type == 3:
+                    agency.experience_points = int(getattr(agency, "experience_points", 0)) + 1
+            except Exception as e:
+                print(f"⚠️ Failed to apply orb to agency {agency_id}: {e}")
+
+        pkt = self.build_xp_orb_packet(
+            point_type=point_type,
+            source_kind=source_kind,
+            vessel_id=vessel_id,
+            planet_id=planet_id,
+            building_type=building_type,
+        )
+        sent = 0
+        for s in self.control.sessions:
+            if not s.alive:
+                continue
+            p = getattr(s, "player", None)
+            if not p or getattr(p, "agency_id", None) != agency_id:
+                continue
+            sent += 1 if self._udp_send_to_session(s, pkt) else 0
+        return sent
 
     async def notify_same_system(self, galaxy: int, system: int, notif_kind: int, message: str) -> int:
         """

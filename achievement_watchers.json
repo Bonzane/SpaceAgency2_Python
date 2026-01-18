@@ -1,0 +1,103 @@
+{
+    "achievement_watchers" : [
+        {
+            "id" : "ach_ping",
+            "name" : "ACH_PING",
+            "description" : "Launch a communication satellite into orbit.",
+            "metric" : "commsat_in_orbit",
+            "target" : 1,
+            "steam_id" : "ACH_PING",
+            "official_only" : true
+        },
+        {
+            "id" : "ach_keem",
+            "name" : "ACH_KEEM",
+            "description" : "Reach Mach 1000.",
+            "metric" : "speed_record_mach",
+            "target" : 1000,
+            "steam_id" : "ACH_KEEM",
+            "official_only" : true
+        },
+        {
+            "id" : "ach_photons",
+            "name" : "ACH_PHOTONS",
+            "description" : "Reach Mach 78663.",
+            "metric" : "speed_record_mach",
+            "target" : 78663,
+            "steam_id" : "ACH_PHOTONS",
+            "official_only" : true
+        },
+        {
+            "id" : "ach_warpfactor1",
+            "name" : "ACH_WARPFACTOR1",
+            "description" : "Reach Mach 87403.",
+            "metric" : "speed_record_mach",
+            "target" : 87403,
+            "steam_id" : "ACH_WARPFACTOR1",
+            "official_only" : true
+        },
+        {
+            "id" : "ach_longnap",
+            "name" : "ACH_LONGNAP",
+            "description" : "Reach 365 days on a manned mission.",
+            "metric" : "longest_manned_mission_days",
+            "target" : 365,
+            "steam_id" : "ACH_LONGNAP",
+            "official_only" : true
+        },
+        {
+            "id" : "ach_birthday",
+            "name" : "ACH_BIRTHDAY",
+            "description" : "Reach an agency age of 365 days.",
+            "metric" : "oldest_agency_age_days",
+            "target" : 365,
+            "steam_id" : "ACH_BIRTHDAY",
+            "official_only" : true
+        },
+        {
+            "id" : "ach_tng",
+            "name" : "ACH_TNG",
+            "description" : "Reach an agency age of 10957 days.",
+            "metric" : "oldest_agency_age_days",
+            "target" : 10957,
+            "steam_id" : "ACH_TNG",
+            "official_only" : true
+        },
+        {
+            "id" : "ach_5g",
+            "name" : "ACH_5G",
+            "description" : "Reach cell tower level 5.",
+            "metric" : "cell_tower_level",
+            "target" : 5,
+            "steam_id" : "ACH_5G",
+            "official_only" : true
+        },
+        {
+            "id" : "ach_rocketman",
+            "name" : "ACH_ROCKETMAN",
+            "description" : "Launch 100 vessels.",
+            "metric" : "vessels_launched",
+            "target" : 100,
+            "steam_id" : "ACH_ROCKETMAN",
+            "official_only" : true
+        },
+        {
+            "id" : "ach_uncstatus",
+            "name" : "ACH_UNCSTATUS",
+            "description" : "Reach an agency age of 36500 days.",
+            "metric" : "oldest_agency_age_days",
+            "target" : 36500,
+            "steam_id" : "ACH_UNCSTATUS",
+            "official_only" : true
+        },
+        {
+            "id" : "ach_murphys_law",
+            "name" : "ACH_MURPHYS_LAW",
+            "description" : "Visit 4000000000000000000 planets.",
+            "metric" : "planets_visited",
+            "target" : 4000000000000000000,
+            "steam_id" : "ACH_MURPHYS_LAW",
+            "official_only" : true
+        }
+    ]
+}

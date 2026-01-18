@@ -69,8 +69,8 @@ class Chunk:
         self.deserialize_chunk()
         self.ready = True
 
-        # TEMPORARILY SKIP GPU - MINE IS BROKEN LOL
-        self.xp, self.on_gpu = select_backend(True)
+        # Prefer GPU when available; fall back to CPU automatically.
+        self.xp, self.on_gpu = select_backend(False)
 
 
     def is_ready(self) -> bool:
@@ -450,34 +450,58 @@ class Chunk:
             if obj not in physics_objects:
                 obj.do_update(dt, (0.0, 0.0))
 
-        # 5) stream packet
-        chunkpacket = bytearray()
-        chunkpacket.append(DataGramPacketType.OBJECT_STREAM)
-        chunkpacket += struct.pack('<H', self.manager.shared.udp_server.objstream_seq)
-        self.manager.shared.udp_server.objstream_seq += 1
-        if self.manager.shared.udp_server.objstream_seq > 65534:
-            self.manager.shared.udp_server.objstream_seq = 0
+        # 5) stream packets (MTU-safe chunking)
+        objs = list(self.objects)
+        header_size = 1 + 2 + 2  # opcode + seq + count
+        item_size = struct.calcsize('<QQQfff')
+        max_payload = 1200  # conservative UDP payload target to avoid fragmentation
+        max_per_packet = max(1, (max_payload - header_size) // item_size)
 
-        chunkpacket += struct.pack('<H', len(self.objects))
-        for obj in self.objects:
-            obj_x, obj_y = getattr(obj, "position", (0, 0))
-            obj_vx, obj_vy = getattr(obj, "velocity", (0, 0))
-            chunkpacket += struct.pack(
-                '<QQQfff',
-                obj.object_id,
-                self.signed_to_unsigned64(int(obj_x)),
-                self.signed_to_unsigned64(int(obj_y)),
-                float(obj_vx),
-                float(obj_vy),
-                obj.rotation,
-            )
+        packets = []
+        if not objs:
+            pkt = bytearray()
+            pkt.append(DataGramPacketType.OBJECT_STREAM)
+            pkt += struct.pack('<H', self.manager.shared.udp_server.objstream_seq)
+            self.manager.shared.udp_server.objstream_seq += 1
+            if self.manager.shared.udp_server.objstream_seq > 65534:
+                self.manager.shared.udp_server.objstream_seq = 0
+            pkt += struct.pack('<H', 0)
+            packets.append(pkt)
+        else:
+            idx = 0
+            while idx < len(objs):
+                batch = objs[idx:idx + max_per_packet]
+                idx += max_per_packet
+
+                pkt = bytearray()
+                pkt.append(DataGramPacketType.OBJECT_STREAM)
+                pkt += struct.pack('<H', self.manager.shared.udp_server.objstream_seq)
+                self.manager.shared.udp_server.objstream_seq += 1
+                if self.manager.shared.udp_server.objstream_seq > 65534:
+                    self.manager.shared.udp_server.objstream_seq = 0
+
+                pkt += struct.pack('<H', len(batch))
+                for obj in batch:
+                    obj_x, obj_y = getattr(obj, "position", (0, 0))
+                    obj_vx, obj_vy = getattr(obj, "velocity", (0, 0))
+                    pkt += struct.pack(
+                        '<QQQfff',
+                        obj.object_id,
+                        self.signed_to_unsigned64(int(obj_x)),
+                        self.signed_to_unsigned64(int(obj_y)),
+                        float(obj_vx),
+                        float(obj_vy),
+                        obj.rotation,
+                    )
+                packets.append(pkt)
 
         for player in self.manager.shared.players.values():
             if player.galaxy == self.galaxy and player.system == self.system:
                 session = player.session
                 if session and session.udp_port and session.alive:
                     addr = (session.remote_ip, session.udp_port)
-                    self.manager.shared.udp_server.transport.sendto(chunkpacket, addr)
+                    for pkt in packets:
+                        self.manager.shared.udp_server.transport.sendto(pkt, addr)
 
         to_remove = []
         for obj in list(self.objects):

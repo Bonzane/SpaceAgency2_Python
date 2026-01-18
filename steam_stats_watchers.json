@@ -1,0 +1,67 @@
+{
+    "steam_stats_watchers" : [
+        {
+            "id" : "stat_satellites_in_orbit",
+            "stat_name" : "stat_satellites_in_orbit",
+            "metric" : "satellites_in_orbit",
+            "mode" : "max",
+            "official_only" : true
+        },
+        {
+            "id" : "stat_stranded_astronauts",
+            "stat_name" : "stat_stranded_astronauts",
+            "metric" : "stranded_astronauts",
+            "mode" : "max",
+            "official_only" : true
+        },
+        {
+            "id" : "stat_longestmannedmissiontime",
+            "stat_name" : "stat_longestmannedmissiontime",
+            "metric" : "longest_manned_mission_days",
+            "mode" : "max",
+            "official_only" : true
+        },
+        {
+            "id" : "stat_oldestagencyage",
+            "stat_name" : "stat_oldestagencyage",
+            "metric" : "oldest_agency_age_days",
+            "mode" : "max",
+            "official_only" : true
+        },
+        {
+            "id" : "stat_max_satellite_level",
+            "stat_name" : "stat_max_satellite_level",
+            "metric" : "max_satellite_level",
+            "mode" : "max",
+            "official_only" : true
+        },
+        {
+            "id" : "stat_speed_record_mach",
+            "stat_name" : "stat_speed_record_mach",
+            "metric" : "speed_record_mach",
+            "mode" : "max",
+            "official_only" : true
+        },
+        {
+            "id" : "stat_cell_tower_level",
+            "stat_name" : "stat_cell_tower_level",
+            "metric" : "cell_tower_level",
+            "mode" : "max",
+            "official_only" : true
+        },
+        {
+            "id" : "stat_vessels_launched",
+            "stat_name" : "stat_vessels_launched",
+            "metric" : "vessels_launched",
+            "mode" : "set",
+            "official_only" : true
+        },
+        {
+            "id" : "planets_visited",
+            "stat_name" : "planets_visited",
+            "metric" : "planets_visited",
+            "mode" : "set",
+            "official_only" : true
+        }
+    ]
+}

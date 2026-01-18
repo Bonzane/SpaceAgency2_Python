@@ -120,6 +120,18 @@ class Session:
                     sent = await self.control_server.broadcast_to_agency(sender_agency_id, pkt)
                     print(f"🏢 Agency chat relayed to {sent} live session(s) in agency {sender_agency_id}")
 
+                case ChatMessage.ADMINISTRATOR:
+                    admins = getattr(getattr(self.control_server, "shared", None), "admins", []) or []
+                    try:
+                        sid = int(self.steam_id)
+                    except Exception:
+                        sid = None
+                    if sid is None or sid not in admins:
+                        print(f"🚫 Dropping admin chat from non-admin steam_id={self.steam_id}")
+                        return
+                    await self.control_server.broadcast(pkt)
+                    print(f"🛡️ Admin chat relayed from {self.steam_id}")
+
                 case _:
                     # Not handled yet; ignore silently (or log if you want)
                     pass
@@ -564,9 +576,7 @@ class Session:
                     cs = getattr(self, "control_server", None)
                     shared = getattr(cs, "shared", None) if cs else None
 
-                if shared and getattr(shared, "udp_server", None):
-                    udp = shared.udp_server
-
+                if shared:
                     # Building name (from game_desc)
                     bdef = shared.buildings_by_id.get(building_type, {}) if getattr(shared, "buildings_by_id", None) else {}
                     bname = bdef.get("name", f"Building {building_type}")
@@ -581,17 +591,18 @@ class Session:
                             planet_name = getattr(planet_obj, "name", None)
 
                     where = f" on {planet_name}" if planet_name else f" on planet {planet_id}"
-                    msg = f"Upgraded {bname} to level {new_level}{where}"
+                    msg = f"{{{int(player.steamID)}}} upgraded {bname}{where} to level {new_level}"
 
-                    # Send to all members of the agency (notif kind 2 = success)
                     try:
-                        await udp.notify_agency(agency.id64, 2, msg)
-                        # or fire-and-forget to avoid awaiting in the handler:
-                        # asyncio.create_task(udp.notify_agency(agency.id64, 2, msg))
+                        if hasattr(self.control_server, "broadcast_to_agency"):
+                            chat_pkt = self.control_server._build_chat_packet(ChatMessage.SERVERGENERAL, 0, msg)
+                            await self.control_server.broadcast_to_agency(agency.id64, chat_pkt)
+                        else:
+                            print("⚠️ control_server missing broadcast_to_agency; skip chat notice.")
                     except Exception as e:
-                        print(f"⚠️ notify_agency failed: {e}")
+                        print(f"⚠️ Failed to send building upgrade chat: {e}")
                 else:
-                    print("⚠️ shared or udp_server missing; skip agency notification.")
+                    print("⚠️ shared missing; skip agency chat notification.")
 
             else:
                 print(f"❌ Upgrade failed ({reason}). Needed {cost}, player has {player.money}.")
@@ -761,4 +772,3 @@ class Session:
             await self.writer.wait_closed()
         except Exception as e:
             print(f"⚠️ Error closing session socket: {e}")
-

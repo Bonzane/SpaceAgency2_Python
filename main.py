@@ -9,6 +9,7 @@
 #   may result in being rejected for or losing your Hyder trust key.
 
 import asyncio
+import ast
 import server
 from textual.app import App, ComposeResult
 from textual.widgets import Header, Footer, Static
@@ -84,11 +85,30 @@ async def main():
     print("Listing healthcheck status:", listing_server_status)
 
     # Create the mission control
-    admins = server_settings.get("administrators", [])
+    admins_raw = server_settings.get("administrators", [])
+    # Parse administrators list from config (supports JSON/py list string)
+    if isinstance(admins_raw, str):
+        try:
+            admins = ast.literal_eval(admins_raw)
+        except Exception:
+            admins = [a.strip() for a in admins_raw.strip("[]").split(",") if a.strip()]
+    else:
+        admins = admins_raw
+    # Coerce to ints
+    parsed_admins = []
+    for a in admins:
+        try:
+            parsed_admins.append(int(a))
+        except Exception:
+            continue
+    admins = parsed_admins
     missioncontrol = server.ServerMissionControl(admins)
     missioncontrol.set_public_name(server_settings.get("server_name", "Commsat"))
     missioncontrol.main_loop = asyncio.get_running_loop()
     missioncontrol.game_mode = server_settings.get("game_mode", "explore")
+    missioncontrol.official_server = str(os.getenv("OFFICIAL_SERVER", server_settings.get("official_server", "0"))).lower() in ("1", "true", "yes")
+    missioncontrol.steam_app_id = int(os.getenv("STEAM_APP_ID", server_settings.get("steam_app_id", 0)) or 0)
+    missioncontrol.steam_publisher_key = os.getenv("STEAM_PUBLISHER_KEY", server_settings.get("steam_publisher_key", "")) or ""
 
 
 
@@ -141,6 +161,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
-
-

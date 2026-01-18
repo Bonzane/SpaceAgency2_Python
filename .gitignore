@@ -25,3 +25,8 @@ dist/
 
 # Secrets
 keys/
+
+steamworks_sdk.zip
+steamworks_sdk/
+steamworks_sdk_*.zip
+steamworks_sdk_*/

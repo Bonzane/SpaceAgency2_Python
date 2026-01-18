@@ -154,19 +154,31 @@ class Building:
     #RETURNS A LIST OF BUILDINGS THAT THIS BUILDING HAS UNLOCKED AT ITS CURRENT LEVEL
     def get_building_unlocks(self):
         unlocked_buildings = []
-        if(self.constructed):
-            for level in self.unlocks:
-                if self.level >= int(level):
-                    unlocked_buildings.extend(self.unlocks[level].get("unlock_buildings", []))
+        if self.constructed:
+            # Refresh unlock data from shared definitions to pick up newly added unlocks
+            unlocks = self.shared.buildings_by_id.get(int(self.type), {}).get("attributes", {}).get("buildinglevel_unlocks", {}) or self.unlocks
+            for level, effects in unlocks.items():
+                try:
+                    lvl_req = int(level)
+                except Exception:
+                    continue
+                if self.level >= lvl_req and isinstance(effects, dict):
+                    unlocked_buildings.extend(effects.get("unlock_buildings", []))
         return unlocked_buildings
             
     # SAME BUT FOR COMPONENTS
     def get_component_unlocks(self):
         unlocked_components = []
-        if(self.constructed):
-            for level in self.unlocks:
-                if self.level >= int(level):
-                    unlocked_components.extend(self.unlocks[level].get("unlock_components", []))
+        if self.constructed:
+            # Refresh unlock data from shared definitions to pick up newly added unlocks
+            unlocks = self.shared.buildings_by_id.get(int(self.type), {}).get("attributes", {}).get("buildinglevel_unlocks", {}) or self.unlocks
+            for level, effects in unlocks.items():
+                try:
+                    lvl_req = int(level)
+                except Exception:
+                    continue
+                if self.level >= lvl_req and isinstance(effects, dict):
+                    unlocked_components.extend(effects.get("unlock_components", []))
         return unlocked_components
             
         
