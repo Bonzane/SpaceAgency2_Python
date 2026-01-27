@@ -763,6 +763,137 @@ class Session:
 
             print(f"✅ Crafted '{recipe_name}' at planet {planet_id} via {facility_key}.")
 
+        elif function_code == PacketType.ENTER_TERRAIN:
+            planet_id = int.from_bytes(await self.reader.readexactly(8), "little")
+            last_hash = int.from_bytes(await self.reader.readexactly(8), "little")
+            player, agency = self._get_player_and_agency()
+            terrain_bytes = b""
+            error_code = 0
+            terrain_hash = 0
+
+            if not player or not agency:
+                error_code = 1
+            else:
+                cm = self.control_server.shared.chunk_manager
+                host_chunk = cm.get_chunk_from_object_id(planet_id)
+                if host_chunk is None:
+                    error_code = 2
+                elif player.galaxy != host_chunk.galaxy or player.system != host_chunk.system:
+                    error_code = 3
+                else:
+                    planet_obj = host_chunk.get_object_by_id(planet_id)
+                    try:
+                        from gameobjects import Planet
+                    except Exception:
+                        Planet = None
+                    if planet_obj is None or (Planet is not None and not isinstance(planet_obj, Planet)):
+                        error_code = 4
+                    elif not agency.has_discovered(planet_id):
+                        error_code = 5
+                    else:
+                        has_presence = bool(agency.get_astronauts_on_planet(planet_id))
+                        if not has_presence:
+                            for v in agency.get_all_vessels():
+                                if not getattr(v, "landed", False):
+                                    continue
+                                pid = agency._vessel_landed_planet_id(v)
+                                if pid == planet_id:
+                                    has_presence = True
+                                    break
+                        if not has_presence:
+                            error_code = 6
+                        else:
+                            planet_name = str(getattr(planet_obj, "name", ""))
+                            terrain_data = cm.planet_terrain_defaults(planet_obj)
+                            cm.ensure_terrain_chunk(
+                                host_chunk.galaxy,
+                                host_chunk.system,
+                                planet_id,
+                                planet_name=planet_name,
+                                terrain_data=terrain_data,
+                            )
+                            terrain = cm.load_terrain_chunk(
+                                host_chunk.galaxy,
+                                host_chunk.system,
+                                planet_id,
+                                planet_name=planet_name,
+                                terrain_data=terrain_data,
+                            )
+                            online_agencies = self._online_agencies()
+                            if agency:
+                                online_agencies.setdefault(int(agency.id64), agency)
+                            self._seed_terrain_entities(terrain, online_agencies.values(), planet_id)
+                            player.terrain_planet_id = int(planet_id)
+                            def _astronauts_on_planet(agency_obj, pid: int):
+                                lst = agency_obj.get_astronauts_on_planet(pid)
+                                if lst:
+                                    return lst
+                                fallback = []
+                                for astro in getattr(agency_obj, "astronauts", {}).values():
+                                    try:
+                                        if int(getattr(astro, "planet_id", 0) or 0) == int(pid):
+                                            fallback.append(astro)
+                                    except Exception:
+                                        continue
+                                return fallback
+
+                            allowed_astronauts = set()
+                            for ag in online_agencies.values():
+                                for astro in _astronauts_on_planet(ag, planet_id):
+                                    allowed_astronauts.add(int(getattr(astro, "id32", 0)))
+                            filtered = []
+                            for ent in terrain.entities:
+                                if getattr(ent, "kind", "") != "astronaut":
+                                    filtered.append(ent)
+                                    continue
+                                eid = int(getattr(ent, "entity_id", 0))
+                                if eid in allowed_astronauts:
+                                    filtered.append(ent)
+                            terrain_bytes = terrain.to_json_bytes_with_entities(filtered)
+                            terrain_hash = terrain.hash_from_bytes(terrain_bytes)
+                            if last_hash == terrain_hash:
+                                terrain_bytes = b""
+                            try:
+                                await self.control_server.tell_everyone_info_about_everyone()
+                            except Exception as e:
+                                print(f"⚠️ broadcast INFO_ABOUT_PLAYERS failed: {e}")
+
+            packet = bytearray()
+            packet += PacketType.ENTER_TERRAIN_REPLY.to_bytes(2, "little")
+            packet.append(int(error_code))
+            packet += struct.pack("<Q", int(planet_id))
+            packet += struct.pack("<Q", int(terrain_hash))
+            packet += struct.pack("<I", len(terrain_bytes))
+            packet += terrain_bytes
+            await self.send(packet)
+
+        elif function_code == PacketType.EXIT_TERRAIN:
+            player, agency = self._get_player_and_agency()
+            error_code = 0
+            planet_id = 0
+            if not player or not agency:
+                error_code = 1
+            else:
+                planet_id = int(getattr(player, "terrain_planet_id", 0))
+                if planet_id == 0:
+                    error_code = 2
+                else:
+                    player.terrain_planet_id = 0
+                    try:
+                        self.control_server.shared.chunk_manager.release_astronaut_controls(self.steam_id)
+                    except Exception:
+                        pass
+                    try:
+                        await self.control_server.tell_everyone_info_about_everyone()
+                    except Exception as e:
+                        print(f"⚠️ broadcast INFO_ABOUT_PLAYERS failed: {e}")
+
+            packet = bytearray()
+            packet += PacketType.EXIT_TERRAIN_REPLY.to_bytes(2, "little")
+            packet.append(int(error_code))
+            packet += struct.pack("<Q", int(planet_id))
+            await self.send(packet)
+
         else:
             print(f"🔴 Unknown function code: {function_code}")
             self.alive = False  
@@ -774,6 +905,151 @@ class Session:
         except Exception as e:
             print(f"Send failed: {e}")
             self.alive = False
+
+    def _online_agencies(self) -> dict:
+        agencies = {}
+        for sess in self.control_server.sessions:
+            if not sess.alive:
+                continue
+            player = getattr(sess, "player", None)
+            if not player:
+                continue
+            agency = self.control_server.shared.agencies.get(int(getattr(player, "agency_id", 0)))
+            if not agency:
+                continue
+            agencies[int(agency.id64)] = agency
+        return agencies
+
+    def _seed_terrain_entities(self, terrain, agencies, planet_id: int) -> None:
+        try:
+            from terrain_chunk import TerrainEntity
+        except Exception:
+            return
+
+        if not terrain:
+            return
+
+        terrain_meta = terrain.terrain or {}
+
+        def _anchor_pos(meta):
+            anchor = str(meta.get("anchor", "")).lower()
+            if anchor == "top_center":
+                return (0.0, 0.0)
+            return (0.0, 0.0)
+
+        base_meta = terrain_meta.get("base", {}) if isinstance(terrain_meta.get("base", {}), dict) else {}
+        spawn_meta = terrain_meta.get("spawn", {}) if isinstance(terrain_meta.get("spawn", {}), dict) else {}
+
+        bx, by = _anchor_pos(base_meta)
+        base_x = bx + float(base_meta.get("x", 0.0))
+        base_y = by + float(base_meta.get("y", 0.0))
+
+        sx, sy = _anchor_pos(spawn_meta)
+        spawn_x = sx + float(spawn_meta.get("x", 0.0))
+        spawn_y = sy + float(spawn_meta.get("y", 0.0))
+        spawn_w = float(spawn_meta.get("w", 0.0))
+        spawn_h = float(spawn_meta.get("h", 0.0))
+
+        if spawn_w < 0.0:
+            spawn_w = 0.0
+        if spawn_h < 0.0:
+            spawn_h = 0.0
+        if spawn_h > 0.0:
+            min_y = spawn_y - (spawn_h * 0.5)
+            if min_y < 0.0:
+                spawn_y += -min_y
+        else:
+            if spawn_y < 0.0:
+                spawn_y = 0.0
+
+        has_base = any(getattr(e, "kind", "") == "base" for e in terrain.entities)
+        if not has_base:
+            terrain.add_entity(
+                TerrainEntity(
+                    entity_id=-int(planet_id),
+                    kind="base",
+                    x=base_x,
+                    y=base_y,
+                    data={"planet_id": int(planet_id)},
+                )
+            )
+
+        existing_astronauts = {
+            int(getattr(e, "entity_id", 0))
+            for e in terrain.entities
+            if getattr(e, "kind", "") == "astronaut"
+        }
+
+        added = False
+        def _astronauts_on_planet(agency_obj, pid: int):
+            lst = agency_obj.get_astronauts_on_planet(pid)
+            if lst:
+                return lst
+            fallback = []
+            for astro in getattr(agency_obj, "astronauts", {}).values():
+                try:
+                    if int(getattr(astro, "planet_id", 0) or 0) == int(pid):
+                        fallback.append(astro)
+                except Exception:
+                    continue
+            return fallback
+
+        import math
+        import random
+        for agency in agencies:
+            astronauts = _astronauts_on_planet(agency, planet_id)
+            for idx, astro in enumerate(astronauts):
+                aid = int(getattr(astro, "id32", 0))
+                if not aid or aid in existing_astronauts:
+                    continue
+                if spawn_w > 0.0 or spawn_h > 0.0:
+                    seed = int(getattr(self.control_server.shared, "seed", 0))
+                    seed_key = (seed << 32) ^ int(planet_id) ^ (aid << 1) ^ (idx << 17)
+                    rng = random.Random(seed_key)
+                    grid = 64.0
+                    half_w = spawn_w * 0.5
+                    half_h = spawn_h * 0.5
+                    min_x = spawn_x - half_w
+                    max_x = spawn_x + half_w
+                    min_y = spawn_y - half_h
+                    max_y = spawn_y + half_h
+
+                    grid_min_x = math.floor(min_x / grid) * grid
+                    grid_max_x = math.floor(max_x / grid) * grid
+                    grid_min_y = math.floor(min_y / grid) * grid
+                    grid_max_y = math.floor(max_y / grid) * grid
+
+                    count_x = int(max(1, math.floor((grid_max_x - grid_min_x) / grid) + 1))
+                    count_y = int(max(1, math.floor((grid_max_y - grid_min_y) / grid) + 1))
+
+                    x = grid_min_x + (rng.randrange(count_x) * grid)
+                    y = grid_min_y + (rng.randrange(count_y) * grid)
+                    if y < 0.0:
+                        y = 0.0
+                else:
+                    x = spawn_x + (idx * 8.0)
+                    y = spawn_y
+                    if y < 0.0:
+                        y = 0.0
+                terrain.add_entity(
+                    TerrainEntity(
+                        entity_id=aid,
+                        kind="astronaut",
+                        x=x,
+                        y=y,
+                        data={
+                            "name": str(getattr(astro, "name", "Astronaut")),
+                            "agency_id": int(getattr(astro, "agency_id", 0)),
+                        },
+                    )
+                )
+                added = True
+
+        if not has_base or added:
+            try:
+                terrain.serialize()
+            except Exception as e:
+                print(f"⚠️ Failed to serialize terrain after seeding: {e}")
 
     async def _read_cstring(self, max_len: int = 256) -> str:
         data = await self.reader.readuntil(b'\x00')  # includes the NUL
@@ -794,6 +1070,10 @@ class Session:
             player = self.control_server.shared.players[self.steam_id]
             if player.session == self:
                 player.session = None
+        try:
+            self.control_server.shared.chunk_manager.release_astronaut_controls(self.steam_id)
+        except Exception:
+            pass
 
         # Remove UDP mapping if it matches
         if self.udp_port:

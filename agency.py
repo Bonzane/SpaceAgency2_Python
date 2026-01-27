@@ -756,6 +756,13 @@ class Agency:
             if not getattr(b, "constructed", False):
                 continue
             unlocks = getattr(b, "unlocks", {}) or {}
+            try:
+                btype = self._type_to_int(getattr(b, "building_type", getattr(b, "type", 0)))
+                fresh = self.shared.buildings_by_id.get(int(btype), {}).get("attributes", {}).get("buildinglevel_unlocks", {})
+                if isinstance(fresh, dict) and fresh:
+                    unlocks = fresh
+            except Exception:
+                pass
 
             for lvl_str, effects in unlocks.items():
                 try:

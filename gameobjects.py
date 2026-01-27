@@ -64,6 +64,14 @@ class ObjectType(IntEnum):
     BASIC_VESSEL = 43
     JETTISONED_COMPONENT = 44
 
+
+class PlanetType(IntEnum):
+    UNKNOWN = 0
+    TERRESTRIAL = 1
+    GAS_GIANT = 2
+    STAR = 3
+    MOON = 4
+
 # Asteroid belt rough bounds (in km). 
 ASTEROID_BELT_INNER_KM = 300_000_000.0
 ASTEROID_BELT_OUTER_KM = 480_000_000.0
@@ -237,6 +245,9 @@ class Planet(PhysicsObject):
     atmosphere_km: float = 10000
     atmosphere_density: float = 1.0
     name: str = "Unnamed Planet"
+    description: str = ""
+    discovered_by: str = ""
+    planet_type: PlanetType = PlanetType.UNKNOWN
 
     regions_km: Dict[int, float] = field(default_factory=dict)
     _region_edges: List[float] = field(default_factory=list, init=False, repr=False)
@@ -258,6 +269,19 @@ class Planet(PhysicsObject):
         items: List[Tuple[int, float]] = sorted(self.regions_km.items(), key=lambda kv: kv[1])  # small→large
         self._region_ids   = [rid for rid, _ in items]
         self._region_edges = [mx  for _,  mx in items]
+
+    def planet_type_id(self) -> int:
+        try:
+            return int(self.planet_type)
+        except Exception:
+            pass
+        if self.is_star:
+            return int(PlanetType.STAR)
+        if self.is_moon:
+            return int(PlanetType.MOON)
+        if self.is_gas_giant:
+            return int(PlanetType.GAS_GIANT)
+        return int(PlanetType.TERRESTRIAL)
 
 
     def set_resources(self, resource_map: Dict[int, float]) -> None:
@@ -476,6 +500,8 @@ class Sun(Planet):
             name="The Sun"
         )
         self.is_star = True
+        self.planet_type = PlanetType.STAR
+        self.description = "A bright G-type main-sequence star. Its gravity holds our solar system together, and makes life on Earth possible. However, it's radiation is incredibly dangerous to any vessel, although thermally resistant vessels can get much closer to it."
         self.set_temperature(5778.0)
 
     def do_update(self, dt: float, acc: Tuple[float, float]):
@@ -501,6 +527,32 @@ class Sun(Planet):
             # Snap onto the boundary
             self.position = (nx * limit, ny * limit)
 
+def earth_terrain_defaults() -> dict:
+    return {
+        "version": 1,
+        "map": {
+            "width": 1638400,
+            "height": 1638400,
+            "origin": {"anchor": "top_center", "x": 0, "y": 0},
+        },
+        "base": {"anchor": "top_center", "x": 0, "y": 0},
+        "spawn": {"anchor": "top_center", "x": 0, "y": 128, "w": 2560, "h": 960},
+        "palette": {
+            "terrain": [0xFF3CBF3C, 0xFF4FD24F, 0xFF6A8F3A, 0xFF8E8B5A],
+            "water": [0xFF1B4F72, 0xFF21618C, 0xFF154360],
+            "shading": [0xFF0B1F2A, 0xFF4F5B62, 0xFF8C9BA5],
+        },
+        "biomes": [
+            {"id": 0, "name": "ocean"},
+            {"id": 1, "name": "shore"},
+            {"id": 2, "name": "plains"},
+            {"id": 3, "name": "forest"},
+            {"id": 4, "name": "desert"},
+            {"id": 5, "name": "tundra"},
+            {"id": 6, "name": "mountain"},
+        ],
+    }
+
 
 class Earth(Planet):
     def __init__(self):
@@ -514,6 +566,9 @@ class Earth(Planet):
             atmosphere_density=1.0,
             name="Earth"
         )
+        self.planet_type = PlanetType.TERRESTRIAL
+        self.description = "Home. A blue terrestrial world covered mostly by water. It provides an endless supply of astronauts."
+        self.terrain_defaults = earth_terrain_defaults()
         self.set_resources({
             Resource.METAL: 500,
             Resource.OIL: 300,
@@ -558,6 +613,8 @@ class Mars(Planet):
             atmosphere_density=0.6,
             name="Mars"
         )
+        self.planet_type = PlanetType.TERRESTRIAL
+        self.description = "A cold, dusty terrestrial planet, rich in metal. A great place to start researching how to sustain life on other planets."
         self.set_regions({
             Region.MARS_CLOSE: 30_000,
             Region.MARS_NEAR: 300_000,
@@ -593,6 +650,8 @@ class Venus(Planet):
             name="Venus"
         )
 
+        self.planet_type = PlanetType.TERRESTRIAL
+        self.description = "A hot terrestrial planet with a dense atmosphere."
         self.set_temperature(737.0)
 
     def do_update(self, dt: float, acc: Tuple[float, float]):
@@ -614,6 +673,8 @@ class Mercury(Planet):
             name="Mercury"
         )
 
+        self.planet_type = PlanetType.TERRESTRIAL
+        self.description = "The smallest planet in the Solar System. One side is extremely hot, and the other is extremely cold."
         self.set_temperature(440.0)
 
     def do_update(self, dt: float, acc: Tuple[float, float]):
@@ -634,6 +695,8 @@ class Jupiter(Planet):
             atmosphere_density=2.0,
             name="Jupiter"
         )
+        self.planet_type = PlanetType.GAS_GIANT
+        self.description = "A massive gas giant with powerful storms."
         self.set_regions({
             Region.JUPITER_CLOSE: 1_000_000,
             Region.JUPITER_NEAR: 30_000_000,
@@ -661,6 +724,8 @@ class Saturn(Planet):
             atmosphere_density=1.5,
             name="Saturn"
         )
+        self.planet_type = PlanetType.GAS_GIANT
+        self.description = "A gas giant known for its rings."
         self.set_regions({
             Region.SATURN_CLOSE: 1_000_000,
             Region.SATURN_NEAR: 40_000_000,
@@ -688,6 +753,8 @@ class Uranus(Planet):
             atmosphere_density=1.5,
             name="Uranus"
         )
+        self.planet_type = PlanetType.GAS_GIANT
+        self.description = "A cold ice giant with a tilted rotation axis."
         self.set_regions({
             Region.URANUS_CLOSE: 5_000_000,
             Region.URANUS_NEAR: 80_000_000,
@@ -715,6 +782,8 @@ class Neptune(Planet):
             atmosphere_density=1.4,
             name="Neptune"
         )
+        self.planet_type = PlanetType.GAS_GIANT
+        self.description = "A mysterious, distant ice giant with fierce winds. Who knows what could be found in its atmosphere?"
         self.set_regions({
             Region.NEPTUNE_CLOSE: 2_000_000,
             Region.NEPTUNE_NEAR: 100_000_000,
@@ -760,6 +829,8 @@ class Luna(Planet):
             atmosphere_density=0.5,
             name="Luna"
         )
+        self.planet_type = PlanetType.MOON
+        self.description = "Earth's only natural satellite. A small vessel with a lander attached can reach it."
         attach_orbit(self, earth, enable=True)
         self.target_a_km = 384_000.0
         self.blend_rate = 0.01
@@ -812,6 +883,8 @@ class Phobos(Planet):
             orbit_radius=a_km,
             is_moon=True,
         )
+        self.planet_type = PlanetType.MOON
+        self.description = "A tiny moon that orbits Mars, along with Deimos. Landing here would be nearly impossible."
 
         # gentle rail to hold ~a_km
         attach_orbit(self, mars, enable=True)
@@ -858,6 +931,8 @@ class Deimos(Planet):
             orbit_radius=a_km,
             is_moon=True,
         )
+        self.planet_type = PlanetType.MOON
+        self.description =  "A tiny moon that orbits Mars, along with Phobos. Landing here would be nearly impossible."
 
         attach_orbit(self, mars, enable=True)
         self.target_a_km = a_km
@@ -916,4 +991,3 @@ class AsteroidBeltAsteroid(PhysicsObject):
             mass=mass,
             radius_km=radius_km,
         )
-

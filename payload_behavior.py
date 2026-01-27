@@ -379,7 +379,23 @@ class Probe(PayloadBehavior):
 
     def _maybe_mark_visit(self):
         v = self.vessel
-        src = getattr(v, "strongest_gravity_source", None)
+        # Consider the nearest planet (not just strongest gravity source)
+        nearest = None
+        nearest_dist = float("inf")
+        try:
+            cm = getattr(v, "home_chunk", None)
+            if cm:
+                for obj in getattr(cm, "objects", []):
+                    if isinstance(obj, Planet):
+                        dx = float(v.position[0]) - float(obj.position[0])
+                        dy = float(v.position[1]) - float(obj.position[1])
+                        d = math.hypot(dx, dy)
+                        if d < nearest_dist:
+                            nearest_dist = d
+                            nearest = obj
+        except Exception:
+            pass
+        src = nearest
         if not isinstance(src, Planet):
             return
 
@@ -390,15 +406,13 @@ class Probe(PayloadBehavior):
         if bool(getattr(src, "is_moon", False)):
             return
 
-        dx = float(v.position[0]) - float(src.position[0])
-        dy = float(v.position[1]) - float(src.position[1])
-        dist_km = math.hypot(dx, dy)
         R = float(getattr(src, "radius_km", 0.0))
         if R <= 0.0:
             return
 
-        thresh = self._visit_threshold_multiplier() * R
-        if dist_km > thresh:
+        # Allow inspection from farther away: default 6× radius
+        thresh = max(self._visit_threshold_multiplier(), 6.0) * R
+        if nearest_dist > thresh:
             return
 
         pid = int(getattr(src, "object_id", 0))

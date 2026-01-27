@@ -37,6 +37,7 @@ Payload: u8 count, then per player:
 - u8 temp_id
 - u32 galaxy
 - u32 system
+- u64 terrain_planet_id (0 = not in a terrain chunk)
 - u64 agency_id
 Sent on join and via refresh broadcasts.
 
@@ -118,6 +119,21 @@ Payload: u16 resource_type + u16 count + u64 from_planet_id.
 ### CRAFT_RESOURCES (0x0017) — client -> server
 Payload: u16 building_type + u64 planet_id + cstring recipe_name.
 
+### ENTER_TERRAIN (0x0019) — client -> server
+Payload: u64 planet_id + u64 last_hash.
+Checks discovery + surface presence and (if valid) returns ENTER_TERRAIN_REPLY. Send `last_hash=0` if no cached terrain.
+
+### ENTER_TERRAIN_REPLY (0x001A) — server -> client
+Payload: u8 error_code + u64 planet_id + u64 terrain_hash + u32 json_len + json blob.
+`error_code=0` means success; otherwise `json_len=0`. If `last_hash` matches `terrain_hash`, `json_len` will be 0.
+
+### EXIT_TERRAIN (0x001B) — client -> server
+Payload: none.
+Clears the player's terrain location and returns EXIT_TERRAIN_REPLY.
+
+### EXIT_TERRAIN_REPLY (0x001C) — server -> client
+Payload: u8 error_code + u64 planet_id (previous terrain planet or 0).
+
 ## UDP packets (DataGramPacketType)
 
 ### LATENCY_LEARN_PORT (0x00) — client -> server; server -> client
@@ -138,7 +154,10 @@ Payload:
 - u16 seq
 - u16 object_count
 - [object_count x (u64 object_id, u64 pos_x_signed, u64 pos_y_signed, f32 vx, f32 vy, f32 rotation)]
-Sent every tick to players in the same (galaxy, system).
+Sent every tick to players in the same (galaxy, system) and **not** on a terrain (`terrain_planet_id == 0`).
+Notes:
+- Stream may be split across multiple OBJECT_STREAM packets per tick (each packet has its own seq/count).
+- pos_x/pos_y are signed 64-bit coordinates serialized as two’s-complement in a u64; clients can read as i64.
 
 ### OBJECT_INQUIRY (0x04) — client -> server; server -> client
 Client payload: u16 count + [count x u64 object_id].
@@ -293,3 +312,28 @@ Region id uses the Region enum (e.g., SPACE, EARTH_NEAR, MOON_NEAR, etc.). `game
 Client payload: u8 region_id (previously unseen).
 Server response: u8 region_id + cstring region_name (enum name; "UNKNOWN_REGION" if unmapped).
 Use when the client encounters a new region and wants the human-readable label.
+
+### RESOLVE_PLANET (0x21) — client -> server; server -> client
+Client payload: u64 planet_id.
+Server response: u64 planet_id + u8 planet_type + cstring name + cstring description + cstring discovered_by.
+Planet type values: 0 unknown, 1 terrestrial, 2 gas_giant, 3 star, 4 moon.
+
+### ASTRONAUT_CONTROL_REQUEST (0x22) — client -> server; server -> client
+Client payload: u32 astronaut_id + u8 action (1=request, 0=release).
+Server response (ASTRONAUT_CONTROL_REPLY): u32 astronaut_id + u8 granted + u64 controller_steam_id.
+
+### ASTRONAUT_COMMAND (0x24) — client -> server
+Client payload: u32 astronaut_id + u8 mode + payload:
+- mode 0: stop (no extra payload)
+- mode 1: target position (f32 x, f32 y)
+- mode 2: direct input (f32 dx, f32 dy)
+Server applies movement only if the sender controls the astronaut.
+
+### ASTRONAUT_STREAM (0x25) — server -> clients
+Payload: u16 count, then per astronaut:
+- u32 astronaut_id
+- f32 x
+- f32 y
+- f32 dir_deg
+- u8 moving
+Sent to players who are currently in the same terrain.

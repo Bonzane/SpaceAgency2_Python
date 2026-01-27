@@ -108,11 +108,24 @@
             "name" : "Storage Facility", 
             "cost" : 50000, 
             "build_time" : 6,
-            "upgrade_costs" : {},
+            "upgrade_costs" : {
+                "2" : 500000,
+                "3" : 5000000,
+                "4" : 50000000
+            },
             "description" : "The Storage Facility allows the planet to hold more resources, which can be used to construct more advanced components.",
             "attributes" : {
                 "buildinglevel_unlocks" : {
                     "1" : {
+                        "add_base_storage" : 1000
+                    },
+                    "2" : {
+                        "add_base_storage" : 1000
+                    },
+                    "3" : {
+                        "add_base_storage" : 1000
+                    },
+                    "4" : {
                         "add_base_storage" : 1000
                     }
                 }
@@ -314,7 +327,8 @@
                         "add_thermal_resistance" : 1
                     },
                     "3" : {
-                        "add_thermal_resistance" : 2
+                        "add_thermal_resistance" : 2,
+                        "unlock_components" : [37]
                     }
                 }
             }
@@ -1751,6 +1765,9 @@
             "category" : "hull",
             "name" : "Thermal Hull", 
             "cost" : 180000,
+            "resource_cost" : {
+                "21" : 5
+            },
             "mass" : 650,
             "attributes" : {
                 "liquid-fuel" : 1050,
@@ -1786,6 +1803,49 @@
                     "y" : -64,
                     "snaps_accepted" : ["attachment-center-give"], 
                     "snaps_provided" : ["attachment-center-receive"]
+                }
+            ]
+
+        },
+        {
+            "id" : 37,
+            "category" : "hull",
+            "name" : "Cryo-Bay", 
+            "cost" : 200000,
+            "resource_cost" : {
+                "1" : 40,
+                "28" : 6
+            },
+            "mass" : 1200,
+            "attributes" : {
+                "liquid-fuel" : 1560,
+                "seats" : 4,
+                "thermal-resistance" : 30
+            }, 
+            "snap_points" : [
+                {
+                    "x" : 0,
+                    "y" : -256,
+                    "snaps_accepted" : ["fuel-give", "fairing-give"], 
+                    "snaps_provided" : ["fairing-receive", "fuel-receive"]
+                }, 
+                {
+                    "x" : 0,
+                    "y" : 256,
+                    "snaps_accepted" : ["fuel-receive"], 
+                    "snaps_provided" : ["fuel-give"]
+                },
+                {
+                    "x" : -100,
+                    "y" : -12,
+                    "snaps_accepted" : ["attachment-left-give"], 
+                    "snaps_provided" : ["attachment-left-receive"]
+                }, 
+                {
+                    "x" : 100,
+                    "y" : -12,
+                    "snaps_accepted" : ["attachment-right-give"], 
+                    "snaps_provided" : ["attachment-right-receive"]
                 }
             ]
 

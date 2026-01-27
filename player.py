@@ -14,6 +14,7 @@ class Player:
         self.player = None
         self.galaxy = 1
         self.system = 1
+        self.terrain_planet_id = 0
         self.agency_id = 0
         self.shared = shared
         self.controlled_vessel_id = -1
@@ -28,4 +29,3 @@ class Player:
         gain = self.shared.base_cash_per_second
 
         self.money = self.money + gain
-

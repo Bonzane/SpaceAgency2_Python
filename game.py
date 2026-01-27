@@ -25,8 +25,8 @@ class Game:
         self.active = False
         self.base_path = pathlib.Path(root).resolve()
         self.universe_path = (self.base_path / "universe").resolve()
-        self.chunk_manager = ChunkManager(shared, self.universe_path, self)
         self.simsec_per_tick = simrate / tickrate
+        self.chunk_manager = ChunkManager(shared, self.universe_path, self)
         self.shared = shared
         self.playersdatafile = None
         self.agenciesdatafile = None
@@ -299,6 +299,7 @@ class Game:
                     "money": int(p.money),
                     "galaxy": int(getattr(p, "galaxy", 1)),
                     "system": int(getattr(p, "system", 1)),
+                    "terrain_planet_id": int(getattr(p, "terrain_planet_id", 0)),
                     "agency_id": int(getattr(p, "agency_id", 0)),
                     "controlled_vessel_id": int(getattr(p, "controlled_vessel_id", -1)),
                 })
@@ -495,6 +496,7 @@ class Game:
                     pl.money = int(pj.get("money", pl.money))
                     pl.galaxy = int(pj.get("galaxy", 1))
                     pl.system = int(pj.get("system", 1))
+                    pl.terrain_planet_id = int(pj.get("terrain_planet_id", 0))
                     pl.agency_id = int(pj.get("agency_id", 0))
                     pl.controlled_vessel_id = int(pj.get("controlled_vessel_id", -1))
 
@@ -561,6 +563,13 @@ class Game:
         print("📍 Added The Sun")
         self.earth = gameobjects.Earth()
         print("📍 Added Earth")
+        self.chunk_manager.ensure_terrain_chunk(
+            1,
+            1,
+            self.earth.object_id,
+            planet_name=self.earth.name,
+            terrain_data=self._planet_terrain_defaults(self.earth),
+        )
         self.luna = gameobjects.Luna(self.earth)
         print("📍 Added The Moon")
         self.mercury = gameobjects.Mercury()
@@ -586,16 +595,22 @@ class Game:
             _attach(p, self.sun)
 
 
+        objects = [
+            self.sun, self.earth, self.luna, self.mercury, self.venus,
+            self.mars, self.jupiter, self.saturn, self.uranus, self.neptune,
+            self.phobos, self.deimos,
+            *belt_asteroids
+        ]
+
+        for obj in objects:
+            if hasattr(obj, "discovered_by"):
+                obj.discovered_by = "major tom"
+
         # Atomic write to avoid partial files
         tmp = chunk_path.with_suffix(".chunk.tmp")
         with open(tmp, "wb") as file:
             pickle.dump(
-                [
-                    self.sun, self.earth, self.luna, self.mercury, self.venus,
-                    self.mars, self.jupiter, self.saturn, self.uranus, self.neptune,
-                    self.phobos, self.deimos,
-                    *belt_asteroids
-                ],
+                objects,
                 file
             )
             file.flush()
@@ -613,3 +628,12 @@ class Game:
         with open(chunk_path, "w") as file:
             file.write("0")
         print(f"✅ Created Milky Way Starmap at {chunk_path}")
+
+    def _planet_terrain_defaults(self, planet):
+        base = getattr(planet, "terrain_defaults", None)
+        if not isinstance(base, dict):
+            return None
+        terrain = dict(base)
+        seed = int(getattr(self.shared, "seed", 0))
+        terrain["seed"] = seed
+        return terrain

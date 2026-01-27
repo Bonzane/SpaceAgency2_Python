@@ -82,6 +82,7 @@ async def update_listing_server(shared_state, http_client, to_url):
                 "streamingServerUDPPort" : shared_state.external_streaming_port,
                 "serverPublicName" : shared_state.server_public_name,
                 "gameMode" : shared_state.game_mode,
+                "versionRequired" : str(getattr(shared_state, "version_required", "0.0")),
                 "passwordProtected" : 0,       # <- BS
                 "maxConnections" : 100,      # <- BS
                 "selfReportedStatus" : 0,      # <- BS
@@ -113,6 +114,7 @@ class ServerMissionControl:
         self.max_players = None
         self.host = "0.0.0.0"
         self.game_mode = "undefined"
+        self.version_required = "0.0"
         self.control_port = None
         self.streaming_port = None
         self.external_control_port = None
@@ -127,6 +129,7 @@ class ServerMissionControl:
         self.chunk_manager = None
         self.gamespeed = 2920
         self.tickrate = 60
+        self.seed = 0
         self.global_thrust_multiplier = 0.2
         self.player_starting_cash = int(200000)
         self.base_cash_per_second = 200
@@ -858,6 +861,27 @@ class ControlServer:
             # 👇 IMPORTANT: re-bind the player to the new session
             player.session = session
 
+        # If a player logs in while flagged as being on a terrain, force them back to space.
+        # This keeps login consistent and avoids rejoining a terrain chunk after reconnect.
+        try:
+            terrain_pid = int(getattr(player, "terrain_planet_id", 0) or 0)
+        except Exception:
+            terrain_pid = 0
+        if terrain_pid > 0:
+            try:
+                cm = self.shared.chunk_manager
+                chunk = cm.get_chunk_from_object_id(terrain_pid)
+                if chunk is not None:
+                    player.galaxy = int(getattr(chunk, "galaxy", player.galaxy))
+                    player.system = int(getattr(chunk, "system", player.system))
+            except Exception:
+                pass
+            player.terrain_planet_id = 0
+            try:
+                self.shared.chunk_manager.release_astronaut_controls(steam_id)
+            except Exception:
+                pass
+
         session.player = player
         await self.send_info_about_agencies_to_session(session)
 
@@ -888,6 +912,7 @@ class ControlServer:
                 packet += struct.pack('<Q', session.steam_id)         # u64 Steam ID
                 packet.append(session.temp_id)                        # u8 Temp ID
                 packet += struct.pack('<II', player.galaxy, player.system)  # u32 galaxy, u32 system
+                packet += struct.pack('<Q', int(getattr(player, "terrain_planet_id", 0)))  # u64 terrain planet id
                 packet += struct.pack('<Q', player.agency_id)         # u64 Agency ID
             else:
                 packet += struct.pack('<Q', 0)  # u64 = 0 means invalid player
@@ -918,9 +943,10 @@ class ControlServer:
             packet += struct.pack('<Q', s.steam_id)                    # u64 Steam ID
             packet.append(s.temp_id)                                   # u8 Temp ID
             packet += struct.pack('<II', player.galaxy, player.system) # u32 galaxy, u32 system
+            packet += struct.pack('<Q', int(getattr(player, "terrain_planet_id", 0)))  # u64 terrain planet id
             packet += struct.pack('<Q', player.agency_id)              # u64 Agency ID
 
-            print(f"🧑 Player: {s.steam_id} | TempID: {s.temp_id} | Galaxy: {player.galaxy}, System: {player.system} | Agency: {player.agency_id}")
+            print(f"🧑 Player: {s.steam_id} | TempID: {s.temp_id} | Galaxy: {player.galaxy}, System: {player.system}, Terrain: {int(getattr(player, 'terrain_planet_id', 0))} | Agency: {player.agency_id}")
 
         await session.send(packet)
         print(f"📨 Sent INFO_ABOUT_PLAYERS packet ({len(packet)} bytes) to session {session.temp_id}")
@@ -1027,6 +1053,7 @@ class StreamingServer:
         self.active = False #The server must be "activated"
         self.control = controlserver
         self.objstream_seq = 0
+        self._terrain_stream_tick = 0
         self._region_name_cache = {}
 
     def _region_display_name(self, region_id: int) -> str:
@@ -1199,6 +1226,169 @@ class StreamingServer:
 
             addr = (session.remote_ip, session.udp_port)
             self.transport.sendto(response, addr)
+
+        elif data[0] == DataGramPacketType.RESOLVE_PLANET:
+            if len(data) < 9:
+                print("⚠️ RESOLVE_PLANET packet too short")
+                return
+
+            key = (ip, port)
+            session = self.shared.udp_endpoint_to_session.get(key)
+            if not session:
+                print(f"❌ Unknown session for {key}")
+                return
+
+            player = session.player
+            if not player:
+                print(f"❌ No player bound to session {session.temp_id}")
+                return
+
+            planet_id = int.from_bytes(data[1:9], "little")
+            chunk_key = (player.galaxy, player.system)
+            chunk = self.shared.chunk_manager.loaded_chunks.get(chunk_key)
+            if not chunk:
+                print(f"⚠️ RESOLVE_PLANET: missing chunk {chunk_key}")
+                return
+
+            obj = chunk.get_object_by_id(planet_id)
+            try:
+                from gameobjects import Planet
+            except Exception:
+                Planet = None
+
+            if obj is None or (Planet is not None and not isinstance(obj, Planet)):
+                print(f"⚠️ RESOLVE_PLANET: object {planet_id} not a planet in chunk {chunk_key}")
+                return
+
+            name = str(getattr(obj, "name", "") or "")
+            description = str(getattr(obj, "description", "") or "")
+            discovered_by = str(getattr(obj, "discovered_by", "") or "")
+            planet_type = 0
+            if hasattr(obj, "planet_type_id"):
+                try:
+                    planet_type = int(obj.planet_type_id())
+                except Exception:
+                    planet_type = 0
+            else:
+                planet_type = 3 if bool(getattr(obj, "is_star", False)) else 0
+
+            response = bytearray()
+            response.append(DataGramPacketType.RESOLVE_PLANET)
+            response += struct.pack("<QB", int(getattr(obj, "object_id", planet_id)), planet_type & 0xFF)
+            response += name.encode("utf-8") + b"\x00"
+            response += description.encode("utf-8") + b"\x00"
+            response += discovered_by.encode("utf-8") + b"\x00"
+
+            addr = (session.remote_ip, session.udp_port)
+            self.transport.sendto(response, addr)
+
+        elif data[0] == DataGramPacketType.ASTRONAUT_CONTROL_REQUEST:
+            if len(data) < 6:
+                print("⚠️ ASTRONAUT_CONTROL_REQUEST packet too short")
+                return
+            key = (ip, port)
+            session = self.shared.udp_endpoint_to_session.get(key)
+            if not session:
+                print(f"❌ Unknown session for {key}")
+                return
+            player = session.player
+            if not player:
+                print(f"❌ No player bound to session {session.temp_id}")
+                return
+
+            astro_id = int.from_bytes(data[1:5], "little")
+            action = int(data[5])
+
+            granted = 0
+            controller = 0
+            cm = getattr(self.shared, "chunk_manager", None)
+            ag, astro = self._find_astronaut(astro_id)
+            if cm and astro and ag:
+                pid = int(getattr(astro, "planet_id", 0) or 0)
+                player_pid = int(getattr(player, "terrain_planet_id", 0) or 0)
+                if pid and pid == player_pid and int(getattr(ag, "id64", 0)) == int(getattr(player, "agency_id", 0)):
+                    state = cm.terrain_astronaut_states.get(int(astro_id))
+                    if action == 0:
+                        if state and int(state.get("controller", 0)) == int(player.steamID):
+                            state["controller"] = 0
+                            state["mode"] = 0
+                            state["input"] = (0.0, 0.0)
+                        granted = 1
+                        controller = 0
+                    else:
+                        if not state:
+                            state = {
+                                "controller": int(player.steamID),
+                                "mode": 0,
+                                "input": (0.0, 0.0),
+                                "target": None,
+                                "dir_deg": 0.0,
+                                "moving": False,
+                            }
+                            cm.terrain_astronaut_states[int(astro_id)] = state
+                        existing = int(state.get("controller", 0))
+                        if existing in (0, int(player.steamID)):
+                            state["controller"] = int(player.steamID)
+                            state["planet_id"] = pid
+                            granted = 1
+                            controller = int(player.steamID)
+                        else:
+                            controller = existing
+
+            response = bytearray()
+            response.append(DataGramPacketType.ASTRONAUT_CONTROL_REPLY)
+            response += struct.pack("<IBQ", int(astro_id) & 0xFFFFFFFF, int(granted), int(controller))
+            addr = (session.remote_ip, session.udp_port)
+            self.transport.sendto(response, addr)
+
+        elif data[0] == DataGramPacketType.ASTRONAUT_COMMAND:
+            if len(data) < 6:
+                print("⚠️ ASTRONAUT_COMMAND packet too short")
+                return
+            key = (ip, port)
+            session = self.shared.udp_endpoint_to_session.get(key)
+            if not session:
+                print(f"❌ Unknown session for {key}")
+                return
+            player = session.player
+            if not player:
+                print(f"❌ No player bound to session {session.temp_id}")
+                return
+
+            astro_id = int.from_bytes(data[1:5], "little")
+            mode = int(data[5])
+            cm = getattr(self.shared, "chunk_manager", None)
+            if not cm:
+                return
+            state = cm.terrain_astronaut_states.get(int(astro_id))
+            if not state or int(state.get("controller", 0)) != int(player.steamID):
+                return
+
+            if mode == 0:
+                state["mode"] = 0
+                state["input"] = (0.0, 0.0)
+                state["target"] = None
+                return
+
+            if mode == 1:
+                if len(data) < 6 + 8:
+                    print("⚠️ ASTRONAUT_COMMAND target packet too short")
+                    return
+                x, y = struct.unpack("<ff", data[6:14])
+                state["mode"] = 1
+                state["target"] = (float(x), float(y))
+                state["input"] = (0.0, 0.0)
+                return
+
+            if mode == 2:
+                if len(data) < 6 + 8:
+                    print("⚠️ ASTRONAUT_COMMAND input packet too short")
+                    return
+                dx, dy = struct.unpack("<ff", data[6:14])
+                state["mode"] = 2
+                state["input"] = (float(dx), float(dy))
+                state["target"] = None
+                return
 
         elif data[0] == DataGramPacketType.CAMERA_CONTEXT:
             # Client sends: [opcode][int64 x][int64 y]
@@ -1435,8 +1625,13 @@ class StreamingServer:
                 self._udp_send_to_session(session, self.build_notification_packet(1, "Upgrade failed: could not unlock"))
                 return
 
-            # Success: notify, push updated tree to the requester, and refresh money HUD
-            self._udp_send_to_session(session, self.build_notification_packet(2, f"Upgrade purchased (#{upgrade_id}) for {cost}"))
+            # Success: chat to purchaser, push updated tree to the requester, and refresh money HUD
+            try:
+                msg = f"Upgrade purchased (#{upgrade_id}) for {cost}"
+                chat_pkt = self._build_chat_packet(ChatMessage.SERVERGENERAL, 0, msg)
+                asyncio.create_task(session.send(chat_pkt))
+            except Exception as e:
+                print(f"⚠️ Failed to send upgrade chat: {e}")
             try:
                 pkt = vessel._build_upgrades_dgram()
                 self._udp_send_to_session(session, pkt)
@@ -2110,7 +2305,92 @@ class StreamingServer:
     async def _broadcast_loop(self):
         while True:
             self.send_player_details()
+            if self._terrain_stream_tick % 6 == 0:
+                self.send_terrain_astronaut_stream()
+            self._terrain_stream_tick += 1
             await asyncio.sleep(1 / 60)  
+
+    def _online_agencies(self) -> dict:
+        agencies = {}
+        for sess in self.control.sessions:
+            if not sess.alive:
+                continue
+            player = getattr(sess, "player", None)
+            if not player:
+                continue
+            ag = self.shared.agencies.get(int(getattr(player, "agency_id", 0)))
+            if not ag:
+                continue
+            agencies[int(ag.id64)] = ag
+        return agencies
+
+    def _find_astronaut(self, astro_id: int):
+        for ag in self.shared.agencies.values():
+            astro = ag.astronauts.get(int(astro_id))
+            if astro:
+                return ag, astro
+        return None, None
+
+    def send_terrain_astronaut_stream(self):
+        cm = getattr(self.shared, "chunk_manager", None)
+        if cm is None:
+            return
+
+        sessions = [s for s in self.control.sessions if s.alive]
+        if not sessions:
+            return
+
+        groups = {}
+        for sess in sessions:
+            player = getattr(sess, "player", None)
+            if not player:
+                continue
+            pid = int(getattr(player, "terrain_planet_id", 0))
+            if pid <= 0:
+                continue
+            key = (int(getattr(player, "galaxy", 0)), int(getattr(player, "system", 0)), pid)
+            groups.setdefault(key, []).append(sess)
+
+        if not groups:
+            return
+
+        online_agencies = self._online_agencies()
+
+        for key, sess_list in groups.items():
+            terrain = cm.loaded_terrain_chunks.get(key)
+            if terrain is None:
+                continue
+            entries = []
+            for ent in terrain.entities:
+                if getattr(ent, "kind", "") != "astronaut":
+                    continue
+                data = getattr(ent, "data", {}) or {}
+                agency_id = int(data.get("agency_id", 0) or 0)
+                if agency_id and agency_id not in online_agencies:
+                    continue
+                state = cm.terrain_astronaut_states.get(int(getattr(ent, "entity_id", 0)), {})
+                dir_deg = float(state.get("dir_deg", 0.0))
+                moving = 1 if bool(state.get("moving", False)) else 0
+                entries.append(
+                    (
+                        int(getattr(ent, "entity_id", 0)),
+                        float(getattr(ent, "x", 0.0)),
+                        float(getattr(ent, "y", 0.0)),
+                        dir_deg,
+                        moving,
+                    )
+                )
+
+            pkt = bytearray()
+            pkt.append(DataGramPacketType.ASTRONAUT_STREAM)
+            pkt += struct.pack("<H", len(entries))
+            for aid, x, y, dir_deg, moving in entries:
+                pkt += struct.pack("<IfffB", int(aid) & 0xFFFFFFFF, float(x), float(y), float(dir_deg), int(moving))
+
+            for sess in sess_list:
+                if sess.udp_port and sess.alive:
+                    addr = (sess.remote_ip, sess.udp_port)
+                    self.transport.sendto(pkt, addr)
 
     def build_resolve_vessel_packet(self, vessel):
         if vessel is None:

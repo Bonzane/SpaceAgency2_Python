@@ -106,6 +106,7 @@ async def main():
     missioncontrol.set_public_name(server_settings.get("server_name", "Commsat"))
     missioncontrol.main_loop = asyncio.get_running_loop()
     missioncontrol.game_mode = server_settings.get("game_mode", "explore")
+    missioncontrol.version_required = str(server_settings.get("version_required", "0.0"))
     missioncontrol.official_server = str(os.getenv("OFFICIAL_SERVER", server_settings.get("official_server", "0"))).lower() in ("1", "true", "yes")
     missioncontrol.steam_app_id = int(os.getenv("STEAM_APP_ID", server_settings.get("steam_app_id", 0)) or 0)
     missioncontrol.steam_publisher_key = os.getenv("STEAM_PUBLISHER_KEY", server_settings.get("steam_publisher_key", "")) or ""
@@ -148,6 +149,10 @@ async def main():
     missioncontrol.base_cash_per_second = int(game_defaults.get("basecashpersecond", 200))
     missioncontrol.server_global_cash_multiplier = float(game_defaults.get("globalcashmultipler", 1.0))
     missioncontrol.global_thrust_multiplier = float(game_defaults.get("thrustmultiplier", 0.2))
+    try:
+        missioncontrol.seed = int(game_defaults.get("seed", 0))
+    except Exception:
+        missioncontrol.seed = 0
     missioncontrol.tickrate = tickrate
     missioncontrol.game = await asyncio.to_thread(Game, game_files, tickrate, gamespeed, missioncontrol)
 

@@ -16,8 +16,9 @@ game.path ./gameData/devgame8/
 🚀 -------------------------------------
 🚀  Server Configuration
 🚀 -------------------------------------
-server_settings.server_name Dev.Py
+server_settings.server_name Dev.Local
 server_settings.gamemode explore
+server_settings.version_required 0.2
 server_settings.maxclients 99
 server_settings.listing_domain https://list.commsat.org
 server_settings.game_is_public 1
@@ -51,7 +52,8 @@ game_defaults.baseincomemultiplier 1.0
 game_defaults.playerstartcash 200000
 game_defaults.basecashpersecond 100
 game_defaults.gamespeedmultiplier 0.5
+🚀 Seed for procedural generation (terrain, stars, galaxies)
+game_defaults.seed 0
 
 🚀 This is a boolean value. 0 = false 1 = true. 
 game_defaults.disableglobalchat 0
-

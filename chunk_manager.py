@@ -1,8 +1,10 @@
+import math
 import threading
 import time
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import Any, Dict, Optional, Tuple
 from chunk_c import Chunk 
+from terrain_chunk import TerrainChunk
 import json
 
 class ChunkManager:
@@ -10,6 +12,8 @@ class ChunkManager:
         print("🧠The chunkmanager has awoken 👀")
         self.root = Path(root_directory)
         self.loaded_chunks: Dict[Tuple[int, int], Chunk] = {}
+        self.loaded_terrain_chunks: Dict[Tuple[int, int, int], TerrainChunk] = {}
+        self.terrain_astronaut_states: Dict[int, Dict[str, Any]] = {}
         self.tickrate = tickrate 
         self.game = game
         self.shared = shared
@@ -36,6 +40,9 @@ class ChunkManager:
         if key in self.loaded_chunks:
             print(f"🌀 Chunk {key} already loaded.")
             return
+
+        if galaxy > 0 and system > 0:
+            self.ensure_system_dirs(galaxy, system)
 
         filepath = self._get_chunk_path(galaxy, system)
         chunk = Chunk(galaxy, system, filepath, self)
@@ -68,17 +75,41 @@ class ChunkManager:
         else:
             return self.root / "galaxies" / str(galaxy) / "systems" / f"system_{system}.chunk"
 
+    def _system_support_dir(self, galaxy: int, system: int) -> Path:
+        return self.root / "galaxies" / str(galaxy) / "systems" / f"system_{system}"
+
+    def _terrain_root(self, galaxy: int, system: int) -> Path:
+        return self._system_support_dir(galaxy, system) / "terrains"
+
+    def ensure_system_dirs(self, galaxy: int, system: int) -> None:
+        if galaxy <= 0 or system <= 0:
+            return
+        self._terrain_root(galaxy, system).mkdir(parents=True, exist_ok=True)
+
+    def terrain_chunk_path(self, galaxy: int, system: int, planet_id: int) -> Path:
+        if galaxy <= 0 or system <= 0:
+            raise ValueError("Terrain chunks require a galaxy/system location.")
+        self.ensure_system_dirs(galaxy, system)
+        return self._terrain_root(galaxy, system) / f"planet_{int(planet_id)}.terrain"
+
     def _start_threads(self):
         threading.Thread(target=self._tick_loop, daemon=True).start()
         threading.Thread(target=self._autosave_loop, daemon=True).start()
 
     def _tick_loop(self):
+        last_time = time.time()
         while True:
             start = time.time()
+            dt_real = start - last_time
+            if dt_real <= 0:
+                dt_real = 1.0 / self.tickrate
+            last_time = start
             with self._lock:
                 for chunk in self.loaded_chunks.values():
                     if chunk.is_ready():
                         chunk.update_objects(self.game.simsec_per_tick)
+                # Terrain movement should use real-time seconds, not accelerated sim time.
+                self._update_terrain_astronauts(dt_real)
             elapsed = time.time() - start
             delay = max(0, 1 / self.tickrate - elapsed)
             time.sleep(delay)
@@ -103,14 +134,193 @@ class ChunkManager:
                     chunk.serialize_chunk()
                 except Exception as e:
                     print(f"❌ Failed to serialize chunk {chunk.galaxy, chunk.system}: {e}")
+            for terrain in self.loaded_terrain_chunks.values():
+                try:
+                    terrain.serialize()
+                except Exception as e:
+                    print(f"WARN: Failed to serialize terrain chunk {terrain.path}: {e}")
 
 
     def how_many_chunks_loaded(self) -> int:
         return len(self.loaded_chunks)
+
+    def how_many_terrain_chunks_loaded(self) -> int:
+        return len(self.loaded_terrain_chunks)
+
+    def _update_terrain_astronauts(self, dt: float) -> None:
+        if dt <= 0:
+            return
+        speed = 170.0
+        for terrain in self.loaded_terrain_chunks.values():
+            terrain_meta = terrain.terrain or {}
+            map_meta = terrain_meta.get("map", {}) if isinstance(terrain_meta.get("map", {}), dict) else {}
+            width = float(map_meta.get("width", 0.0) or 0.0)
+            height = float(map_meta.get("height", 0.0) or 0.0)
+            x_min = -width * 0.5 if width > 0.0 else None
+            x_max = width * 0.5 if width > 0.0 else None
+            y_min = 0.0
+            y_max = height if height > 0.0 else None
+
+            for ent in terrain.entities:
+                if getattr(ent, "kind", "") != "astronaut":
+                    continue
+                state = self.terrain_astronaut_states.get(int(getattr(ent, "entity_id", 0)))
+                if not state:
+                    continue
+
+                mode = int(state.get("mode", 0))
+                moving = False
+                dir_deg = float(state.get("dir_deg", 0.0))
+
+                if mode == 1:
+                    target = state.get("target")
+                    if isinstance(target, (list, tuple)) and len(target) == 2:
+                        tx, ty = float(target[0]), float(target[1])
+                        dx = tx - float(ent.x)
+                        dy = ty - float(ent.y)
+                        dist = math.hypot(dx, dy)
+                        if dist > 1e-6:
+                            step = speed * dt
+                            if dist <= step:
+                                ent.x = tx
+                                ent.y = ty
+                                moving = False
+                            else:
+                                ux, uy = dx / dist, dy / dist
+                                ent.x = float(ent.x) + ux * step
+                                ent.y = float(ent.y) + uy * step
+                                moving = True
+                                dir_deg = math.degrees(math.atan2(uy, ux))
+                        else:
+                            moving = False
+                elif mode == 2:
+                    vec = state.get("input")
+                    if isinstance(vec, (list, tuple)) and len(vec) == 2:
+                        ix, iy = float(vec[0]), float(vec[1])
+                        mag = math.hypot(ix, iy)
+                        if mag > 1e-6:
+                            ux, uy = ix / mag, iy / mag
+                            ent.x = float(ent.x) + ux * speed * dt
+                            ent.y = float(ent.y) + uy * speed * dt
+                            moving = True
+                            dir_deg = math.degrees(math.atan2(uy, ux))
+                        else:
+                            moving = False
+                else:
+                    moving = False
+
+                if x_min is not None:
+                    ent.x = max(x_min, min(x_max, float(ent.x)))
+                if y_max is not None:
+                    ent.y = max(y_min, min(y_max, float(ent.y)))
+                elif float(ent.y) < y_min:
+                    ent.y = y_min
+
+                state["moving"] = moving
+                state["dir_deg"] = dir_deg
+
+    def ensure_terrain_chunk(
+        self,
+        galaxy: int,
+        system: int,
+        planet_id: int,
+        planet_name: str = "",
+        terrain_data: Optional[Dict[str, Any]] = None,
+    ) -> Path:
+        path = self.terrain_chunk_path(galaxy, system, planet_id)
+        if path.exists() and path.stat().st_size > 0:
+            if terrain_data:
+                terrain = TerrainChunk(
+                    galaxy,
+                    system,
+                    planet_id,
+                    path,
+                    planet_name=planet_name,
+                    terrain_data=terrain_data,
+                )
+                if self._merge_terrain_defaults(terrain.terrain, terrain_data):
+                    terrain.serialize()
+            return path
+        terrain = TerrainChunk(
+            galaxy,
+            system,
+            planet_id,
+            path,
+            planet_name=planet_name,
+            terrain_data=terrain_data,
+        )
+        terrain.serialize()
+        return path
+
+    def load_terrain_chunk(
+        self,
+        galaxy: int,
+        system: int,
+        planet_id: int,
+        planet_name: str = "",
+        terrain_data: Optional[Dict[str, Any]] = None,
+    ) -> TerrainChunk:
+        key = (int(galaxy), int(system), int(planet_id))
+        if key in self.loaded_terrain_chunks:
+            return self.loaded_terrain_chunks[key]
+        path = self.terrain_chunk_path(galaxy, system, planet_id)
+        terrain = TerrainChunk(
+            galaxy,
+            system,
+            planet_id,
+            path,
+            planet_name=planet_name,
+            terrain_data=terrain_data,
+        )
+        if terrain_data:
+            if self._merge_terrain_defaults(terrain.terrain, terrain_data):
+                terrain.serialize()
+        self.loaded_terrain_chunks[key] = terrain
+        return terrain
+
+    def planet_terrain_defaults(self, planet) -> Optional[Dict[str, Any]]:
+        base = getattr(planet, "terrain_defaults", None)
+        if not isinstance(base, dict):
+            return None
+        terrain = dict(base)
+        seed = int(getattr(self.shared, "seed", 0))
+        terrain["seed"] = seed
+        return terrain
+
+    def _merge_terrain_defaults(self, target: Dict[str, Any], defaults: Dict[str, Any]) -> bool:
+        if target is None or defaults is None:
+            return False
+        changed = False
+        for key, value in defaults.items():
+            if key not in target or target[key] in ({}, None, []):
+                target[key] = value
+                changed = True
+        return changed
+
+    def unload_terrain_chunk(self, galaxy: int, system: int, planet_id: int) -> None:
+        key = (int(galaxy), int(system), int(planet_id))
+        terrain = self.loaded_terrain_chunks.pop(key, None)
+        if not terrain:
+            return
+        try:
+            terrain.serialize()
+        except Exception as e:
+            print(f"WARN: Failed to serialize terrain chunk {terrain.path}: {e}")
     
 
     def register_object(self, object_id, galaxy, system):
         self.object_id_to_chunk[object_id] = (galaxy, system)
+
+    def release_astronaut_controls(self, controller_id: int) -> None:
+        try:
+            cid = int(controller_id)
+        except Exception:
+            return
+        for state in self.terrain_astronaut_states.values():
+            if int(state.get("controller", 0)) == cid:
+                state["controller"] = 0
+                state["mode"] = 0
+                state["input"] = (0.0, 0.0)
 
     def unregister_object(self, object_id: int) -> bool:
         """Forget which chunk an object_id lives in. Returns True if it was present."""
@@ -232,6 +442,7 @@ class ChunkManager:
                 p = self.shared.players[pid]
                 p.galaxy = galaxy
                 p.system = 0
+                p.terrain_planet_id = 0
 
     def transfer_to_system(self, vessel, galaxy: int, target_system: int, target_point: tuple):
         dirx, diry = vessel._direction_to_point(target_point)
@@ -249,6 +460,7 @@ class ChunkManager:
                 p = self.shared.players[pid]
                 p.galaxy = galaxy
                 p.system = target_system
+                p.terrain_planet_id = 0
 
     def transfer_to_universe(self, vessel):
         ch = getattr(vessel, "home_chunk", None)
@@ -271,6 +483,7 @@ class ChunkManager:
                 p = self.shared.players[pid]
                 p.galaxy = 0
                 p.system = 0
+                p.terrain_planet_id = 0
 
     def transfer_to_galaxy(self, vessel, galaxy: int, target_point: tuple):
         dirx, diry = vessel._direction_to_point(target_point)
@@ -289,3 +502,4 @@ class ChunkManager:
                 p = self.shared.players[pid]
                 p.galaxy = galaxy
                 p.system = 0
+                p.terrain_planet_id = 0

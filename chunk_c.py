@@ -6,7 +6,7 @@ from typing import List, Union
 
 import numpy as np
 
-from gameobjects import Sun, Earth, PhysicsObject, ObjectType, GameObject
+from gameobjects import Sun, Earth, PhysicsObject, ObjectType, GameObject, PlanetType, earth_terrain_defaults
 from physics import G
 from packet_types import DataGramPacketType
 from vessels import Vessel, VesselState
@@ -74,6 +74,68 @@ class Chunk:
 
         # Cache scale for this chunk
         self.km_per_unit = self.manager.scale_for(self.galaxy, self.system)
+
+    def _migrate_planet_metadata(self, obj) -> None:
+        if not is_planet(obj):
+            return
+
+        if not hasattr(obj, "description"):
+            obj.description = ""
+        if not hasattr(obj, "discovered_by"):
+            obj.discovered_by = ""
+        if not hasattr(obj, "planet_type"):
+            obj.planet_type = PlanetType.UNKNOWN
+
+        solar_defaults = {
+            ObjectType.SUN: ("A bright G-type main-sequence star.", PlanetType.STAR),
+            ObjectType.EARTH: ("A blue terrestrial world rich in water.", PlanetType.TERRESTRIAL),
+            ObjectType.MARS: ("A cold, dusty terrestrial world.", PlanetType.TERRESTRIAL),
+            ObjectType.VENUS: ("A hot terrestrial planet with a dense atmosphere.", PlanetType.TERRESTRIAL),
+            ObjectType.MERCURY: ("A small terrestrial world close to the Sun.", PlanetType.TERRESTRIAL),
+            ObjectType.JUPITER: ("A massive gas giant with powerful storms.", PlanetType.GAS_GIANT),
+            ObjectType.SATURN: ("A gas giant known for its rings.", PlanetType.GAS_GIANT),
+            ObjectType.URANUS: ("A cold ice giant with a tilted rotation axis.", PlanetType.GAS_GIANT),
+            ObjectType.NEPTUNE: ("A distant ice giant with fierce winds.", PlanetType.GAS_GIANT),
+            ObjectType.LUNA: ("Earth's natural satellite.", PlanetType.MOON),
+            ObjectType.PHOBOS: ("A small, irregular moon of Mars.", PlanetType.MOON),
+            ObjectType.DEIMOS: ("A tiny moon of Mars.", PlanetType.MOON),
+        }
+
+        obj_type = getattr(obj, "object_type", None)
+        default_desc, default_ptype = solar_defaults.get(obj_type, ("", PlanetType.UNKNOWN))
+
+        if not str(getattr(obj, "description", "") or "").strip() and default_desc:
+            obj.description = default_desc
+
+        try:
+            pt_val = int(getattr(obj, "planet_type", PlanetType.UNKNOWN))
+        except Exception:
+            pt_val = int(PlanetType.UNKNOWN)
+        if pt_val == int(PlanetType.UNKNOWN):
+            if default_ptype != PlanetType.UNKNOWN:
+                obj.planet_type = default_ptype
+            elif getattr(obj, "is_star", False):
+                obj.planet_type = PlanetType.STAR
+            elif getattr(obj, "is_moon", False):
+                obj.planet_type = PlanetType.MOON
+            elif getattr(obj, "is_gas_giant", False):
+                obj.planet_type = PlanetType.GAS_GIANT
+            else:
+                obj.planet_type = PlanetType.TERRESTRIAL
+
+        if not str(getattr(obj, "discovered_by", "") or "").strip() and obj_type in solar_defaults:
+            obj.discovered_by = "major tom"
+
+        if obj_type == ObjectType.EARTH:
+            desired = earth_terrain_defaults()
+            td = getattr(obj, "terrain_defaults", None)
+            if not isinstance(td, dict) or not td:
+                obj.terrain_defaults = desired
+            else:
+                # Merge missing keys into older saved defaults.
+                for key, value in desired.items():
+                    if key not in td or td[key] in ({}, None, []):
+                        td[key] = value
 
 
     def is_ready(self) -> bool:
@@ -500,10 +562,14 @@ class Chunk:
 
         for player in self.manager.shared.players.values():
             if player.galaxy == self.galaxy and player.system == self.system:
+                if int(getattr(player, "terrain_planet_id", 0)) > 0:
+                    continue
                 session = player.session
                 if session and session.udp_port and session.alive:
                     addr = (session.remote_ip, session.udp_port)
                     for pkt in packets:
+                        print(f"📡 OBJECT_STREAM -> steam_id={player.steamID} "
+                              f"chunk=({self.galaxy},{self.system}) bytes={len(pkt)}")
                         self.manager.shared.udp_server.transport.sendto(pkt, addr)
 
         to_remove = []
@@ -627,6 +693,9 @@ class Chunk:
                 f"from {self.path.name}: "
                 + ", ".join(f"{k}={v}" for k, v in type_counts.items())
             )
+
+            for obj in objs:
+                self._migrate_planet_metadata(obj)
 
             # Pass 1: non-vessels
             print("🔎 Pass 1: Adding non-vessel objects...")
